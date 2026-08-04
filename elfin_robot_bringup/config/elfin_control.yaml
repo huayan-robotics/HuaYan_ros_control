@@ -1,0 +1,29 @@
+# Unified Elfin bringup configuration.
+# This file is authoritative when launching elfin_control.launch.py.
+elfin_control:
+  robot_model: elfin5
+  hardware_type: controller       # controller, gazebo, or ethercat
+  robot_ip: 10.20.215.133
+  control_mode: position           # position, velocity, or controller
+
+  # Controller identity/version preflight (requires model match and >= 6.5.20d).
+  enable_controller_validation: false
+
+  # 8892 ServoJ behavior.
+  servo_gain: 8000
+  lookahead_time: 0.004
+  servo_restart_idle_ms: 100
+  position_command_epsilon: 1.0e-8
+  velocity_command_epsilon: 1.0e-8
+  command_log_throttle_ms: 100     # 0 logs every command; negative disables
+
+  # 8893 state supervision.
+  state_stale_timeout_ms: 100
+  state_disconnect_timeout_ms: 1000
+
+  # 10004 pushed robot/IO state.
+  pushed_state_port: 10004
+  pushed_state_socket_timeout_ms: 100
+  pushed_state_disconnect_timeout_ms: 1000
+  status_publish_rate: 10.0
+  io_publish_rate: 5.0

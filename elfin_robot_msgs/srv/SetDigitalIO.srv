@@ -1,0 +1,7 @@
+# domain: "box_do", "box_co", or "end_do".
+string domain
+int32 index
+bool value
+---
+bool success
+string message

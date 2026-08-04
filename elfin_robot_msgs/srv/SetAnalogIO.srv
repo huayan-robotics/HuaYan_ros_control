@@ -1,0 +1,7 @@
+# Box analog output channel, mode, and controller-native value.
+int32 index
+int32 mode
+float64 value
+---
+bool success
+string message

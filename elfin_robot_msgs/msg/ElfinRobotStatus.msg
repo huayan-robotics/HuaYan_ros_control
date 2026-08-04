@@ -1,0 +1,17 @@
+std_msgs/Header header
+bool sdk_connected
+bool moving
+bool enabled
+bool error
+int32 error_code
+int32 error_axis
+bool braking
+bool paused
+bool emergency_stop
+bool safeguard_stop
+bool electrified
+bool controller_connected
+bool blending_done
+bool in_position
+bool freedrive
+bool force_freedrive

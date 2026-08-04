@@ -1,0 +1,16 @@
+std_msgs/Header header
+float64[6] joint_position_target
+float64[6] joint_velocity_target
+float64[6] joint_position_actual
+float64[6] joint_velocity_actual
+float64[6] joint_torque_actual
+float64[6] tcp_position_target
+float64[6] tcp_velocity_target
+float64[6] tcp_position_actual
+float64[6] tcp_velocity_actual
+float64[6] force_raw
+float64[6] force_calibrated
+float64 speed_scaling
+uint64 controller_time_us
+int32 state_machine
+int32 force_control_state

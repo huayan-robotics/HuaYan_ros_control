@@ -1,0 +1,5 @@
+# SDK pose units: X/Y/Z in mm, Rx/Ry/Rz in degrees.
+float64[6] pose
+---
+bool success
+string message

@@ -1,0 +1,7 @@
+<library path="elfin_controller_hardware">
+  <class name="elfin_controller_driver/ElfinControllerHardware"
+         type="elfin_controller_driver::ElfinControllerHardware"
+         base_class_type="hardware_interface::SystemInterface">
+    <description>Elfin controller hardware using ports 8893 and 8892.</description>
+  </class>
+</library>
