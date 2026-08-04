@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 
-<robot name="elfin10_l" xmlns:xacro="http://wiki.ros.org/xacro">
+<robot name="E10-L" xmlns:xacro="http://wiki.ros.org/xacro">
 
   <xacro:arg name="use_real_hardware" default="true" />
   <xacro:arg name="use_fake_hardware" default="false" />

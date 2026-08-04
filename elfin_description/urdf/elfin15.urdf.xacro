@@ -1,5 +1,5 @@
 <robot
-  name="elfin15" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  name="E15" xmlns:xacro="http://www.ros.org/wiki/xacro">
   
   <xacro:include filename="$(find elfin_description)/urdf/materials.xacro" />
   

@@ -10,6 +10,15 @@ from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import Command, FindExecutable, LaunchConfiguration
 from launch_ros.actions import Node
 
+MODEL_RESOURCES = {
+    "E03": "elfin3",
+    "E05": "elfin5",
+    "E05-L": "elfin5_l",
+    "E10": "elfin10",
+    "E10-L": "elfin10_l",
+    "E15": "elfin15",
+}
+
 
 def _load_yaml(package_name, relative_path):
     path = os.path.join(get_package_share_directory(package_name), relative_path)
@@ -25,12 +34,15 @@ def _load_text(package_name, relative_path):
 
 def _configure(context):
     model = LaunchConfiguration("robot_model").perform(context)
+    if model not in MODEL_RESOURCES:
+        raise RuntimeError(f"Unsupported robot_model: {model}")
+    resource_model = MODEL_RESOURCES[model]
     use_sim_time = LaunchConfiguration("use_sim_time")
-    gazebo_package = f"{model}_ros2_gazebo"
-    moveit_package = f"{model}_ros2_moveit2"
+    gazebo_package = f"{resource_model}_ros2_gazebo"
+    moveit_package = f"{resource_model}_ros2_moveit2"
 
     xacro_file = os.path.join(
-        get_package_share_directory(gazebo_package), "urdf", f"{model}.urdf.xacro"
+        get_package_share_directory(gazebo_package), "urdf", f"{resource_model}.urdf.xacro"
     )
     robot_description = {
         "robot_description": Command(
@@ -45,7 +57,7 @@ def _configure(context):
     }
     semantic = {
         "robot_description_semantic": _load_text(
-            moveit_package, f"config/{model}.srdf"
+            moveit_package, f"config/{resource_model}.srdf"
         )
     }
     kinematics = {
@@ -96,7 +108,7 @@ def _configure(context):
         },
     ]
     rviz_config = os.path.join(
-        get_package_share_directory(moveit_package), "launch", f"{model}_moveit2.rviz"
+        get_package_share_directory(moveit_package), "launch", f"{resource_model}_moveit2.rviz"
     )
     return [
         Node(
@@ -119,7 +131,7 @@ def _configure(context):
 def generate_launch_description():
     return LaunchDescription(
         [
-            DeclareLaunchArgument("robot_model", default_value="elfin5"),
+            DeclareLaunchArgument("robot_model", default_value="E05"),
             DeclareLaunchArgument("use_sim_time", default_value="false"),
             OpaqueFunction(function=_configure),
         ]

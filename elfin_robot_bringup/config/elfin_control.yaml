@@ -1,7 +1,7 @@
 # Unified Elfin bringup configuration.
 # This file is authoritative when launching elfin_control.launch.py.
 elfin_control:
-  robot_model: elfin5
+  robot_model: E05
   hardware_type: controller       # controller, gazebo, or ethercat
   robot_ip: 10.20.215.133
   control_mode: position           # position, velocity, or controller

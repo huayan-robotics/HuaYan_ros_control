@@ -39,7 +39,7 @@ int main(int argc, char ** argv)
   rclcpp::init(argc, argv);
   auto node = std::make_shared<rclcpp::Node>("elfin_sdk_preflight");
   const auto robot_ip = node->declare_parameter<std::string>("robot_ip", "10.20.200.3");
-  const auto expected_model = node->declare_parameter<std::string>("robot_model", "elfin5");
+  const auto expected_model = node->declare_parameter<std::string>("robot_model", "E05");
   const int sdk_port = static_cast<int>(node->declare_parameter<int>("sdk_port", 10003));
   const auto box_id = static_cast<unsigned int>(node->declare_parameter<int>("box_id", 0));
   const auto robot_id = static_cast<unsigned int>(node->declare_parameter<int>("robot_id", 0));

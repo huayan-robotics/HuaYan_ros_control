@@ -50,12 +50,12 @@ ros2 pkg prefix elfin_robot_bringup
 支持的 `robot_model`：
 
 ```text
-elfin3
-elfin5
-elfin5_l
-elfin10
-elfin10_l
-elfin15
+E03
+E05
+E05-L
+E10
+E10-L
+E15
 ```
 
 ## 3. 统一启动入口
@@ -79,7 +79,7 @@ elfin_robot_bringup/config/elfin_control.yaml
 | 参数 | 默认值 | 说明 |
 |---|---:|---|
 | `config_file` | 包内`config/elfin_control.yaml` | 统一启动配置文件路径 |
-| `robot_model` | `elfin5` | 机器人型号 |
+| `robot_model` | `E05` | 机器人型号（控制器 `typealias`） |
 | `hardware_type` | `gazebo` | `controller`、`gazebo`、`ethercat` 或 `fake` |
 | `robot_ip` | `10.20.200.3` | 真实控制器 IP |
 | `control_mode` | `position` | `position`、`velocity` 或 `controller` |
@@ -102,7 +102,7 @@ elfin_robot_bringup/config/elfin_control.yaml
 
 ```yaml
 elfin_control:
-  robot_model: elfin5
+  robot_model: E05
   hardware_type: controller
   robot_ip: 10.20.215.133
   control_mode: position
@@ -145,14 +145,14 @@ ros2 launch elfin_robot_bringup elfin_control.launch.py \
 只有两项检查全部成功后，才启动`ros2_control_node`、状态广播器、运动控制器和常驻SDK节点。成功日志示例：
 
 ```text
-Preflight passed: model='Elfin5', version='6.5.20d' (required >= 6.5.20d)
+Preflight passed: model='E05', version='6.5.20d' (required >= 6.5.20d)
 Elfin controller preflight passed; starting ros2_control
 ```
 
 机型不匹配、版本过低、版本字符串无法解析或SDK读取失败时，launch会报错并终止，ROS不会获得机械臂控制权。例如：
 
 ```text
-Preflight failed: controller model 'Elfin10' does not match launch robot_model 'elfin5'
+Preflight failed: controller model 'E10' does not match launch robot_model 'E05'
 Preflight failed: controller version '6.5.20c' is older than required version 6.5.20d
 ```
 
@@ -160,7 +160,7 @@ Preflight failed: controller version '6.5.20c' is older than required version 6.
 
 ```bash
 ros2 launch elfin_robot_bringup elfin_control.launch.py \
-  robot_model:=elfin5 hardware_type:=controller control_mode:=position \
+  robot_model:=E05 hardware_type:=controller control_mode:=position \
   robot_ip:=10.20.215.133 enable_controller_validation:=false
 ```
 
@@ -178,7 +178,7 @@ Elfin controller model/version validation is disabled
 
 ```bash
 ros2 launch elfin_robot_bringup elfin_control.launch.py \
-  robot_model:=elfin5 \
+  robot_model:=E05 \
   hardware_type:=controller \
   control_mode:=position \
   robot_ip:=10.20.215.133
@@ -206,7 +206,7 @@ MoveIt 将轨迹发送到：
 
 ```bash
 ros2 launch elfin_robot_bringup elfin_control.launch.py \
-  robot_model:=elfin5 \
+  robot_model:=E05 \
   hardware_type:=controller \
   control_mode:=controller \
   robot_ip:=10.20.215.133
@@ -264,7 +264,7 @@ Ctrl+C、SIGINT、SIGTERM、硬件生命周期`deactivate/cleanup/shutdown/error
 
 ```bash
 ros2 launch elfin_robot_bringup elfin_control.launch.py \
-  robot_model:=elfin5 \
+  robot_model:=E05 \
   hardware_type:=controller \
   control_mode:=velocity \
   robot_ip:=10.20.215.133
@@ -294,7 +294,7 @@ ros2 topic pub --once /elfin_velocity_controller/commands \
 
 ```bash
 ros2 launch elfin_robot_bringup elfin_control.launch.py \
-  robot_model:=elfin5 \
+  robot_model:=E05 \
   hardware_type:=gazebo
 ```
 
@@ -313,7 +313,7 @@ ros2 launch elfin_robot_bringup elfin_control.launch.py \
 
 ```bash
 ros2 launch elfin_robot_bringup elfin_control.launch.py \
-  robot_model:=elfin5 \
+  robot_model:=E05 \
   hardware_type:=ethercat
 ```
 
@@ -689,7 +689,7 @@ Successful 'activate' of hardware 'ElfinController'
 
 ```bash
 ros2 launch elfin_robot_bringup elfin_control.launch.py \
-  robot_model:=elfin5 hardware_type:=controller control_mode:=position \
+  robot_model:=E05 hardware_type:=controller control_mode:=position \
   robot_ip:=10.20.215.133 command_log_throttle_ms:=0 \
   2>&1 | tee /tmp/elfin_position.log
 
@@ -728,7 +728,7 @@ TCP连接同时启用keepalive。正常关闭、连接reset或非法帧会立即
 
 ```bash
 ros2 launch elfin_robot_bringup elfin_control.launch.py \
-  robot_model:=elfin5 hardware_type:=controller control_mode:=controller \
+  robot_model:=E05 hardware_type:=controller control_mode:=controller \
   robot_ip:=10.20.215.133 \
   state_stale_timeout_ms:=100 state_disconnect_timeout_ms:=1000
 ```

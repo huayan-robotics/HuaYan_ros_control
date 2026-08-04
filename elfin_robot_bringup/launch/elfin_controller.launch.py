@@ -19,22 +19,32 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
+MODEL_RESOURCES = {
+    "E03": "elfin3",
+    "E05": "elfin5",
+    "E05-L": "elfin5_l",
+    "E10": "elfin10",
+    "E10-L": "elfin10_l",
+    "E15": "elfin15",
+}
+
 
 def _launch(context):
     model = LaunchConfiguration("robot_model").perform(context)
     mode = LaunchConfiguration("control_mode").perform(context)
     validation_value = LaunchConfiguration("enable_controller_validation").perform(context).lower()
-    if model not in {"elfin3", "elfin5", "elfin5_l", "elfin10", "elfin10_l", "elfin15"}:
+    if model not in MODEL_RESOURCES:
         raise RuntimeError(f"Unsupported robot_model: {model}")
     if mode not in {"position", "velocity", "controller"}:
         raise RuntimeError(f"Unsupported control_mode: {mode}")
     if validation_value not in {"true", "false", "1", "0", "yes", "no", "on", "off"}:
         raise RuntimeError("enable_controller_validation must be true or false")
     validation_enabled = validation_value in {"true", "1", "yes", "on"}
+    resource_model = MODEL_RESOURCES[model]
 
-    model_package = f"{model}_ros2_gazebo"
+    model_package = f"{resource_model}_ros2_gazebo"
     xacro_file = os.path.join(
-        get_package_share_directory(model_package), "urdf", f"{model}.urdf.xacro")
+        get_package_share_directory(model_package), "urdf", f"{resource_model}.urdf.xacro")
     bringup_share = get_package_share_directory("elfin_robot_bringup")
     config_suffix = "state_only" if mode == "controller" else mode
     controllers = os.path.join(bringup_share, "config", f"elfin_controller_{config_suffix}.yaml")
@@ -144,7 +154,7 @@ def _launch(context):
 
 def generate_launch_description():
     return LaunchDescription([
-        DeclareLaunchArgument("robot_model", default_value="elfin5"),
+        DeclareLaunchArgument("robot_model", default_value="E05"),
         DeclareLaunchArgument("robot_ip", default_value="10.20.200.3"),
         DeclareLaunchArgument("control_mode", default_value="controller"),
         DeclareLaunchArgument("servo_gain", default_value="8000"),

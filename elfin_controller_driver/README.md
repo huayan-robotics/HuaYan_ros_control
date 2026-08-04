@@ -70,7 +70,7 @@ Examples:
 
 ```bash
 ros2 launch elfin_robot_bringup elfin_controller.launch.py \
-  robot_model:=elfin5 robot_ip:=10.20.200.3 control_mode:=controller
+  robot_model:=E05 robot_ip:=10.20.200.3 control_mode:=controller
 
 ros2 service call /elfin_sdk/set_enabled std_srvs/srv/SetBool '{data: true}'
 ros2 service call /elfin_sdk/set_freedrive std_srvs/srv/SetBool '{data: true}'

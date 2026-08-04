@@ -11,13 +11,13 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 
 
-SUPPORTED_MODELS = {
-    "elfin3",
-    "elfin5",
-    "elfin5_l",
-    "elfin10",
-    "elfin10_l",
-    "elfin15",
+MODEL_RESOURCES = {
+    "E03": "elfin3",
+    "E05": "elfin5",
+    "E05-L": "elfin5_l",
+    "E10": "elfin10",
+    "E10-L": "elfin10_l",
+    "E15": "elfin15",
 }
 
 CONFIG_KEYS = {
@@ -73,18 +73,19 @@ def _configure(context):
     model = LaunchConfiguration("robot_model").perform(context)
     hardware_type = LaunchConfiguration("hardware_type").perform(context)
 
-    if model not in SUPPORTED_MODELS:
+    if model not in MODEL_RESOURCES:
         raise RuntimeError(
             f"Unsupported robot_model '{model}'. "
-            f"Choose one of: {', '.join(sorted(SUPPORTED_MODELS))}"
+            f"Choose one of: {', '.join(MODEL_RESOURCES)}"
         )
+    resource_model = MODEL_RESOURCES[model]
 
     if hardware_type == "gazebo":
-        simulation_package = f"{model}_ros2_moveit2"
+        simulation_package = f"{resource_model}_ros2_moveit2"
         simulation_launch = os.path.join(
             get_package_share_directory(simulation_package),
             "launch",
-            f"{model}.launch.py",
+            f"{resource_model}.launch.py",
         )
         return [
             IncludeLaunchDescription(
@@ -163,7 +164,7 @@ def generate_launch_description():
             OpaqueFunction(function=_load_config),
             DeclareLaunchArgument(
                 "robot_model",
-                default_value="elfin5",
+                default_value="E05",
                 description="Robot model name",
             ),
             DeclareLaunchArgument(
