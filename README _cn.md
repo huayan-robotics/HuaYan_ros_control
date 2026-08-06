@@ -64,8 +64,9 @@ $ ros2 launch elfin3_ros2_moveit2 elfin3.launch.py
 运行后台程序及Elfin Control Panel界面：
 ```sh
 $ ros2 launch elfin3_ros2_moveit2 elfin3_basic_api.launch.py
-$ ros2 launch elfin_basic_api fake_elfin_gui.launch.py
 ```
+
+当前 Elfin Control Panel 面向控制器连接，不再提供旧的 fake/MoveIt GUI 仿真入口。
 
 > 关于MoveIt!的使用方法可以参考[docs/moveit_plugin_tutorial.md](docs/moveit_plugin_tutorial.md)  
 Tips:  
@@ -102,7 +103,7 @@ $ ros2 launch elfin3_ros2_moveit2 elfin3_basic_api.launch.py
 运行Elfin Control Panel界面
 ```sh
 $ sudo su
-$ ros2 launch elfin_basic_api elfin_gui.launch.py
+$ ros2 launch elfin_basic_api elfin_gui.launch.py robot_model:=E05 robot_ip:=192.168.56.103
 ```
 
 用Elfin Control Panel界面给Elfin使能指令，如果此时没有报错，直接按下"Servo On"即可使能。如果报错，需先按"Clear Fault"清错后再按下"Servo On"使能。

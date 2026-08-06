@@ -33,10 +33,18 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/SetPose.srv"
   "srv/SetDigitalIO.srv"
   "srv/SetAnalogIO.srv"
+  "srv/Jog.srv"
+  "srv/MoveTarget.srv"
+  "srv/GetInt32.srv"
+  "srv/SetPayload.srv"
+  "srv/GetPayload.srv"
+  "srv/GetPose.srv"
+  "srv/SetBrake.srv"
   "msg/ElfinRealtimeState.msg"
   "msg/ElfinRobotStatus.msg"
   "msg/ElfinIOState.msg"
   "msg/ElfinEndIOState.msg"
+  "msg/ElfinBrakeState.msg"
   DEPENDENCIES std_msgs
  )
 

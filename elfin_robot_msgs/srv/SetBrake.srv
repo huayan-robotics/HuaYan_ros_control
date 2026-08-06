@@ -1,0 +1,10 @@
+# Joint index in the range 0..5.
+uint8 axis
+
+# True calls HRIF_OpenBrake (manual release); false calls HRIF_CloseBrake.
+# CloseBrake may require a controller-internal Braking FSM state; Servo Off by
+# itself was not sufficient on the tested HR6.5.22a virtual controller.
+bool release
+---
+bool success
+string message
