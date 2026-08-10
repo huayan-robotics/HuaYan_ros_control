@@ -15,3 +15,4 @@ bool blending_done
 bool in_position
 bool freedrive
 bool force_freedrive
+bool ros_control_active

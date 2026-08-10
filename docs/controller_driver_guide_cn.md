@@ -172,6 +172,91 @@ Elfin controller model/version validation is disabled
 
 除非正在兼容无法正确返回机型或版本信息的旧控制器，否则建议保持开启。
 
+### 3.2 新旧 GUI 启动方式
+
+`elfin_basic_api` 同时保留原有 GUI 和新版控制器 GUI。编译后先加载当前工作区：
+
+```bash
+cd ~/elfin_ros2_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+```
+
+#### 新版 GUI：完整启动
+
+以下命令包含 `elfin_robot_bringup/launch/elfin_control.launch.py`，会启动控制器
+bringup、`elfin_sdk_node`、ros2_control 和新版 GUI：
+
+```bash
+ros2 launch elfin_basic_api elfin_gui_new.launch.py \
+  robot_model:=E05 \
+  robot_ip:=192.168.56.103
+```
+
+新版 GUI 源码为 `elfin_basic_api/scripts/elfin_gui_new.py`。它通过
+`/elfin_sdk/*` topic/service 与 `elfin_sdk_node` 通信，不直接连接控制器端口。
+完整启动默认使用 `hardware_type:=controller`、`control_mode:=controller`，并开启
+机型和版本校验。
+
+#### 新版 GUI：只启动界面
+
+如果控制器 bringup 和 `elfin_sdk_node` 已经在其他终端运行，只启动新版 GUI：
+
+```bash
+ros2 launch elfin_basic_api elfin_gui_only.launch.py
+```
+
+也可以直接运行：
+
+```bash
+ros2 run elfin_basic_api elfin_gui_new.py
+```
+
+只启动界面不会创建 `/elfin_sdk/*` 服务和状态话题；后台节点未运行时，GUI 会显示
+服务不可用或状态失联。
+
+#### 原有 GUI：真实机器人界面
+
+原有启动文件和源码保持兼容：
+
+```bash
+ros2 launch elfin_basic_api elfin_gui.launch.py
+```
+
+该 launch 启动原有 `elfin_basic_api/scripts/elfin_gui.py`，并设置
+`use_fake_robot:=false`、`use_sim_time:=false`。也可直接运行原脚本：
+
+```bash
+ros2 run elfin_basic_api elfin_gui.py
+```
+
+原有 GUI 使用旧 Basic API、MoveIt、TF、IO 和轨迹控制接口，包括
+`/joint_teleop`、`/cart_teleop`、`/stop_teleop`、`/home_teleop`、
+`/read_di`、`/read_do`、`/write_do`、`/joint_states` 和
+`elfin_arm_controller/follow_joint_trajectory`。该 launch 只启动旧 GUI，本身不会
+启动上述后台节点；需要先按原功能包流程启动对应驱动和服务。
+
+#### 原有 GUI：fake 界面
+
+原 fake 启动文件仍然保留：
+
+```bash
+ros2 launch elfin_basic_api fake_elfin_gui.launch.py
+```
+
+它启动原有 `elfin_gui.py`，并设置 `use_fake_robot:=true`、
+`use_sim_time:=true`。它不会自动启动 Gazebo、MoveIt、旧 Basic API 或 IO 服务，
+这些依赖仍需按原仿真流程提前启动。
+
+新旧文件对应关系如下：
+
+| 用途 | launch | GUI 脚本 |
+|---|---|---|
+| 新版完整启动 | `elfin_gui_new.launch.py` | `elfin_gui_new.py` |
+| 新版只启动界面 | `elfin_gui_only.launch.py` | `elfin_gui_new.py` |
+| 原有真实机器人 GUI | `elfin_gui.launch.py` | `elfin_gui.py` |
+| 原有 fake GUI | `fake_elfin_gui.launch.py` | `elfin_gui.py` |
+
 ## 4. 真实机械臂 + MoveIt + RViz
 
 ### 4.1 ROS 位置控制
