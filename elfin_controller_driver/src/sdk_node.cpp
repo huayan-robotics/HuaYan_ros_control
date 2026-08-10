@@ -1,8 +1,6 @@
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <chrono>
-#include <cmath>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -11,22 +9,13 @@
 #include <vector>
 
 #include <controller_manager_msgs/srv/switch_controller.hpp>
-#include <elfin_robot_msgs/msg/elfin_brake_state.hpp>
 #include <elfin_robot_msgs/msg/elfin_io_state.hpp>
 #include <elfin_robot_msgs/msg/elfin_end_io_state.hpp>
 #include <elfin_robot_msgs/msg/elfin_robot_status.hpp>
-#include <elfin_robot_msgs/srv/get_int32.hpp>
-#include <elfin_robot_msgs/srv/get_payload.hpp>
-#include <elfin_robot_msgs/srv/get_pose.hpp>
-#include <elfin_robot_msgs/srv/jog.hpp>
-#include <elfin_robot_msgs/srv/move_target.hpp>
 #include <elfin_robot_msgs/srv/set_analog_io.hpp>
-#include <elfin_robot_msgs/srv/set_brake.hpp>
 #include <elfin_robot_msgs/srv/set_digital_io.hpp>
 #include <elfin_robot_msgs/srv/set_pose.hpp>
 #include <elfin_robot_msgs/srv/set_float64.hpp>
-#include <elfin_robot_msgs/srv/set_int16.hpp>
-#include <elfin_robot_msgs/srv/set_payload.hpp>
 #include <elfin_robot_msgs/srv/set_string.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <std_srvs/srv/set_bool.hpp>
@@ -107,7 +96,7 @@ public:
         if (request->data && force_freedrive_) {
           response->success = false; response->message = "force freedrive is active"; return;
         }
-        if (request->data && ros_control_active_ && !switch_motion_controller(false)) {
+        if (request->data && !switch_motion_controller(false)) {
           response->success = false; response->message = "could not stop ROS motion controller"; return;
         }
         if (request->data) {ros_control_active_ = false; startup_activation_pending_ = false;}
@@ -123,7 +112,7 @@ public:
         if (request->data && freedrive_) {
           response->success = false; response->message = "freedrive is active"; return;
         }
-        if (request->data && ros_control_active_ && !switch_motion_controller(false)) {
+        if (request->data && !switch_motion_controller(false)) {
           response->success = false; response->message = "could not stop ROS motion controller"; return;
         }
         if (request->data) {ros_control_active_ = false; startup_activation_pending_ = false;}
@@ -134,36 +123,13 @@ public:
     stop_service_ = create_service<std_srvs::srv::Trigger>("~/stop",
       [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
         std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
-        int code = 0;
-        {
-          std::lock_guard<std::mutex> lock(sdk_motion_mutex_);
-          code = stop_sdk_motion_locked();
-        }
-        const int estop_code = HRIF_EnterSafetyGuard(box_id_, robot_id_, 1);
-        if (estop_code == 0) {soft_estop_active_ = true;}
-        response->success = estop_code == 0;
-        response->message = estop_code == 0 ? "software emergency stop active" :
-          sdk_result(estop_code) + "; motion stop result: " + sdk_result(code);
+        const int code = HRIF_GrpStop(box_id_, robot_id_);
+        response->success = code == 0; response->message = sdk_result(code);
       }, rmw_qos_profile_services_default, service_group_);
     reset_service_ = create_service<std_srvs::srv::Trigger>("~/reset",
       [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
         std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
-        int code = 0;
-        if (soft_estop_active_) {
-          code = HRIF_EnterSafetyGuard(box_id_, robot_id_, 0);
-          if (code == 0) {soft_estop_active_ = false;}
-        }
-        // Safety-guard cancellation is asynchronous on HR6.5.22a. During the
-        // short SafeguardHandling/Safeguarding window GrpReset returns 20018.
-        // Retry here so one GUI Clear Fault press completes the whole action.
-        if (code == 0) {
-          for (int attempt = 0; attempt < 15; ++attempt) {
-            code = HRIF_GrpReset(box_id_, robot_id_);
-            if (code != 20018) {break;}
-            std::this_thread::sleep_for(200ms);
-          }
-        }
-        set_response(code, response);
+        set_response(HRIF_GrpReset(box_id_, robot_id_), response);
       }, rmw_qos_profile_services_default, service_group_);
     pause_service_ = create_service<std_srvs::srv::Trigger>("~/pause",
       [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
@@ -200,20 +166,8 @@ public:
     tcp_service_ = create_service<elfin_robot_msgs::srv::SetPose>("~/set_tcp",
       [this](const std::shared_ptr<elfin_robot_msgs::srv::SetPose::Request> request,
         std::shared_ptr<elfin_robot_msgs::srv::SetPose::Response> response) {
-        if (!require_disabled("set TCP", response)) {return;}
         const auto & p = request->pose;
-        if (!std::all_of(p.begin(), p.end(), [](double value) {return std::isfinite(value);})) {
-          response->success = false; response->message = "TCP values must be finite"; return;
-        }
         set_response(HRIF_SetTCP(box_id_, robot_id_, p[0], p[1], p[2], p[3], p[4], p[5]), response);
-      }, rmw_qos_profile_services_default, service_group_);
-    get_tcp_service_ = create_service<elfin_robot_msgs::srv::GetPose>("~/get_tcp",
-      [this](const std::shared_ptr<elfin_robot_msgs::srv::GetPose::Request>,
-        std::shared_ptr<elfin_robot_msgs::srv::GetPose::Response> response) {
-        auto & p = response->pose;
-        const int code = HRIF_ReadCurTCP(
-          box_id_, robot_id_, p[0], p[1], p[2], p[3], p[4], p[5]);
-        set_response(code, response);
       }, rmw_qos_profile_services_default, service_group_);
     ucs_service_ = create_service<elfin_robot_msgs::srv::SetPose>("~/set_ucs",
       [this](const std::shared_ptr<elfin_robot_msgs::srv::SetPose::Request> request,
@@ -224,7 +178,6 @@ public:
     tcp_name_service_ = create_service<elfin_robot_msgs::srv::SetString>("~/set_tcp_by_name",
       [this](const std::shared_ptr<elfin_robot_msgs::srv::SetString::Request> request,
         std::shared_ptr<elfin_robot_msgs::srv::SetString::Response> response) {
-        if (!require_disabled("set TCP by name", response)) {return;}
         set_response(HRIF_SetTCPByName(box_id_, robot_id_, request->data), response);
       }, rmw_qos_profile_services_default, service_group_);
     ucs_name_service_ = create_service<elfin_robot_msgs::srv::SetString>("~/set_ucs_by_name",
@@ -247,103 +200,17 @@ public:
         std::shared_ptr<elfin_robot_msgs::srv::SetAnalogIO::Response> response) {
         set_response(HRIF_SetBoxAOVal(box_id_, request->index, request->value, request->mode), response);
       }, rmw_qos_profile_services_default, service_group_);
-    collision_level_service_ = create_service<elfin_robot_msgs::srv::SetInt16>(
-      "~/set_collision_level",
-      [this](const std::shared_ptr<elfin_robot_msgs::srv::SetInt16::Request> request,
-        std::shared_ptr<elfin_robot_msgs::srv::SetInt16::Response> response) {
-        if (!require_disabled("set collision level", response)) {return;}
-        if (request->data < 0 || request->data > 5) {
-          response->success = false;
-          response->message = "collision level must be in [0, 5]";
-          return;
-        }
-        set_response(HRIF_SetCollideLevel(box_id_, robot_id_, request->data), response);
-      }, rmw_qos_profile_services_default, service_group_);
-    get_collision_level_service_ = create_service<elfin_robot_msgs::srv::GetInt32>(
-      "~/get_collision_level",
-      [this](const std::shared_ptr<elfin_robot_msgs::srv::GetInt32::Request>,
-        std::shared_ptr<elfin_robot_msgs::srv::GetInt32::Response> response) {
-        int level = 0;
-        const int code = HRIF_GetCollideLevel(box_id_, robot_id_, level);
-        response->data = level;
-        set_response(code, response);
-      }, rmw_qos_profile_services_default, service_group_);
-    payload_service_ = create_service<elfin_robot_msgs::srv::SetPayload>("~/set_payload",
-      [this](const std::shared_ptr<elfin_robot_msgs::srv::SetPayload::Request> request,
-        std::shared_ptr<elfin_robot_msgs::srv::SetPayload::Response> response) {
-        if (!require_disabled("set payload", response)) {return;}
-        const auto & cog = request->center_of_gravity;
-        if (!std::isfinite(request->mass) ||
-          !std::all_of(cog.begin(), cog.end(), [](double value) {return std::isfinite(value);}))
-        {
-          response->success = false; response->message = "payload values must be finite"; return;
-        }
-        if (request->mass < 0.0) {
-          response->success = false; response->message = "payload mass must be non-negative"; return;
-        }
-        if (request->option != 1 && request->option != 3) {
-          response->success = false; response->message = "payload option must be 1 or 3"; return;
-        }
-        double max_payload = 0.0;
-        const int max_code = HRIF_ReadMaxPayload(box_id_, robot_id_, max_payload);
-        if (max_code != 0) {set_response(max_code, response); return;}
-        if (request->mass > max_payload) {
-          response->success = false;
-          response->message = "payload mass exceeds controller maximum " +
-            std::to_string(max_payload) + " kg";
-          return;
-        }
-        set_response(HRIF_SetPayload(
-          box_id_, robot_id_, request->mass, cog[0], cog[1], cog[2], request->option), response);
-      }, rmw_qos_profile_services_default, service_group_);
-    get_payload_service_ = create_service<elfin_robot_msgs::srv::GetPayload>("~/get_payload",
-      [this](const std::shared_ptr<elfin_robot_msgs::srv::GetPayload::Request>,
-        std::shared_ptr<elfin_robot_msgs::srv::GetPayload::Response> response) {
-        auto & cog = response->center_of_gravity;
-        int code = HRIF_ReadPayload(
-          box_id_, robot_id_, response->mass, cog[0], cog[1], cog[2]);
-        if (code == 0) {
-          code = HRIF_ReadMaxPayload(box_id_, robot_id_, response->max_payload);
-        }
-        set_response(code, response);
-      }, rmw_qos_profile_services_default, service_group_);
-    brake_service_ = create_service<elfin_robot_msgs::srv::SetBrake>("~/set_brake",
-      [this](const std::shared_ptr<elfin_robot_msgs::srv::SetBrake::Request> request,
-        std::shared_ptr<elfin_robot_msgs::srv::SetBrake::Response> response) {
-        if (!require_disabled("change brake state", response)) {return;}
-        if (request->axis > 5) {
-          response->success = false; response->message = "brake axis must be in [0, 5]"; return;
-        }
-        const int code = request->release ?
-          HRIF_OpenBrake(box_id_, robot_id_, request->axis) :
-          HRIF_CloseBrake(box_id_, robot_id_, request->axis);
-        set_response(code, response);
-      }, rmw_qos_profile_services_default, service_group_);
-    jog_service_ = create_service<elfin_robot_msgs::srv::Jog>("~/jog",
-      [this](const std::shared_ptr<elfin_robot_msgs::srv::Jog::Request> request,
-        std::shared_ptr<elfin_robot_msgs::srv::Jog::Response> response) {
-        handle_jog(request, response);
-      }, rmw_qos_profile_services_default, service_group_);
-    move_target_service_ = create_service<elfin_robot_msgs::srv::MoveTarget>("~/move_target",
-      [this](const std::shared_ptr<elfin_robot_msgs::srv::MoveTarget::Request> request,
-        std::shared_ptr<elfin_robot_msgs::srv::MoveTarget::Response> response) {
-        handle_move_target(request, response);
-      }, rmw_qos_profile_services_default, service_group_);
+
     status_publisher_ = create_publisher<elfin_robot_msgs::msg::ElfinRobotStatus>("~/robot_status", 10);
-    brake_publisher_ = create_publisher<elfin_robot_msgs::msg::ElfinBrakeState>(
-      "~/brake_state", 10);
     io_publisher_ = create_publisher<elfin_robot_msgs::msg::ElfinIOState>("~/io_state", 10);
     end_io_publisher_ = create_publisher<elfin_robot_msgs::msg::ElfinEndIOState>(
       "~/end_io_state", 10);
     startup_activation_timer_ = create_wall_timer(
       1000ms, std::bind(&ElfinSdkNode::try_startup_ros_control, this), client_group_);
-    motion_watchdog_timer_ = create_wall_timer(
-      50ms, std::bind(&ElfinSdkNode::check_motion_watchdog, this), service_group_);
   }
 
   ~ElfinSdkNode() override
   {
-    stop_sdk_motion("SDK node shutdown");
     state_running_ = false;
     state_client_.interrupt();
     if (state_thread_.joinable()) {state_thread_.join();}
@@ -364,199 +231,9 @@ public:
 
 private:
   template<typename ResponseT>
-  bool require_sdk_motion_ready(
-    const std::string & operation, const std::shared_ptr<ResponseT> & response) const
-  {
-    const std::string reason = robot_not_ready_reason();
-    if (!reason.empty()) {
-      response->success = false; response->message = operation + " rejected: " + reason; return false;
-    }
-    if (ros_control_active_) {
-      response->success = false; response->message = operation + " rejected: ROS control is active"; return false;
-    }
-    if (freedrive_ || force_freedrive_) {
-      response->success = false; response->message = operation + " rejected: free drive is active"; return false;
-    }
-    return true;
-  }
-  void handle_jog(
-    const std::shared_ptr<elfin_robot_msgs::srv::Jog::Request> & request,
-    const std::shared_ptr<elfin_robot_msgs::srv::Jog::Response> & response)
-  {
-    using Jog = elfin_robot_msgs::srv::Jog::Request;
-    if (request->mode > Jog::MODE_CARTESIAN || request->axis > 5 ||
-      request->direction > Jog::DIRECTION_POSITIVE || request->action > Jog::ACTION_KEEPALIVE)
-    {response->success = false; response->message = "invalid Jog request"; return;}
-    std::lock_guard<std::mutex> lock(sdk_motion_mutex_);
-    if (request->action == Jog::ACTION_STOP) {
-      if (!sdk_motion_active_) {
-        response->success = true; response->message = "already stopped"; return;
-      }
-      if (sdk_motion_kind_ != 1 || request->mode != jog_mode_ ||
-        request->axis != jog_axis_ || request->direction != jog_direction_)
-      {
-        response->success = false;
-        response->message = "Jog stop does not match active Jog";
-        return;
-      }
-      set_response(stop_sdk_motion_locked(), response); return;
-    }
-    if (!require_sdk_motion_ready("Jog", response)) {return;}
-    if (request->action == Jog::ACTION_KEEPALIVE) {
-      if (!sdk_motion_active_ || sdk_motion_kind_ != 1 || request->mode != jog_mode_ ||
-        request->axis != jog_axis_ || request->direction != jog_direction_)
-      {response->success = false; response->message = "Jog keepalive does not match active Jog"; return;}
-      const int code = HRIF_LongMoveEvent(box_id_, robot_id_);
-      if (code == 0) {motion_deadline_ = std::chrono::steady_clock::now() + 500ms;}
-      set_response(code, response); return;
-    }
-    if (sdk_motion_active_) {stop_sdk_motion_locked();}
-    const int code = request->mode == Jog::MODE_JOINT ?
-      HRIF_LongJogJ(box_id_, robot_id_, request->axis, request->direction, 1) :
-      HRIF_LongJogL(box_id_, robot_id_, request->axis, request->direction, 1);
-    if (code == 0) {
-      sdk_motion_active_ = true; sdk_motion_kind_ = 1; jog_mode_ = request->mode;
-      jog_axis_ = request->axis; jog_direction_ = request->direction;
-      motion_deadline_ = std::chrono::steady_clock::now() + 500ms;
-    }
-    set_response(code, response);
-  }
-  void handle_move_target(
-    const std::shared_ptr<elfin_robot_msgs::srv::MoveTarget::Request> & request,
-    const std::shared_ptr<elfin_robot_msgs::srv::MoveTarget::Response> & response)
-  {
-    using Move = elfin_robot_msgs::srv::MoveTarget::Request;
-    if (request->mode > Move::MODE_ALIGN_Z || request->action > Move::ACTION_KEEPALIVE) {
-      response->success = false; response->message = "invalid MoveTarget request"; return;
-    }
-    std::lock_guard<std::mutex> lock(sdk_motion_mutex_);
-    if (request->action == Move::ACTION_STOP) {
-      if (!sdk_motion_active_) {
-        response->success = true; response->message = "already stopped"; return;
-      }
-      if (sdk_motion_kind_ != 2) {
-        response->success = false;
-        response->message = "MoveTarget stop does not match active motion";
-        return;
-      }
-      set_response(stop_sdk_motion_locked(), response); return;
-    }
-    if (!require_sdk_motion_ready("MoveTarget", response)) {return;}
-    if (request->action == Move::ACTION_KEEPALIVE) {
-      if (!sdk_motion_active_ || sdk_motion_kind_ != 2 || !move_hold_required_) {
-        response->success = false; response->message = "no hold-to-run target motion is active"; return;
-      }
-      motion_deadline_ = std::chrono::steady_clock::now() + 500ms;
-      response->success = true; response->message = "success"; return;
-    }
-    if (!std::all_of(request->target.begin(), request->target.end(),
-      [](double value) {return std::isfinite(value);}) || request->velocity <= 0.0 ||
-      request->acceleration <= 0.0 || request->blend_radius < 0.0)
-    {response->success = false; response->message = "invalid MoveTarget numeric value"; return;}
-    const bool align_z = request->mode == Move::MODE_ALIGN_Z;
-    const bool joint = request->mode != Move::MODE_CARTESIAN;
-    auto target = request->target;
-    if (align_z) {
-      bool reached = false;
-      const int align_code = HRIF_MoveAlignToZ(
-        box_id_, robot_id_, "TCP", "Base", reached, target[0], target[1], target[2],
-        target[3], target[4], target[5]);
-      if (align_code != 0) {set_response(align_code, response); return;}
-      if (reached) {
-        response->success = true; response->message = "TCP Z-axis is already aligned"; return;
-      }
-    }
-    const auto & t = target;
-    std::array<double, 6> reference_joints{};
-    if (!joint) {
-      double x = 0.0, y = 0.0, z = 0.0, rx = 0.0, ry = 0.0, rz = 0.0;
-      double tcp_x = 0.0, tcp_y = 0.0, tcp_z = 0.0;
-      double tcp_rx = 0.0, tcp_ry = 0.0, tcp_rz = 0.0;
-      double ucs_x = 0.0, ucs_y = 0.0, ucs_z = 0.0;
-      double ucs_rx = 0.0, ucs_ry = 0.0, ucs_rz = 0.0;
-      const int read_code = HRIF_ReadActPos(
-        box_id_, robot_id_, x, y, z, rx, ry, rz,
-        reference_joints[0], reference_joints[1], reference_joints[2],
-        reference_joints[3], reference_joints[4], reference_joints[5],
-        tcp_x, tcp_y, tcp_z, tcp_rx, tcp_ry, tcp_rz,
-        ucs_x, ucs_y, ucs_z, ucs_rx, ucs_ry, ucs_rz);
-      if (read_code != 0) {set_response(read_code, response); return;}
-    }
-    move_hold_required_ = false;
-    const int code = HRIF_WayPoint(box_id_, robot_id_, joint ? 0 : 1,
-      joint ? 0.0 : t[0], joint ? 0.0 : t[1], joint ? 0.0 : t[2],
-      joint ? 0.0 : t[3], joint ? 0.0 : t[4], joint ? 0.0 : t[5],
-      joint ? t[0] : reference_joints[0], joint ? t[1] : reference_joints[1],
-      joint ? t[2] : reference_joints[2], joint ? t[3] : reference_joints[3],
-      joint ? t[4] : reference_joints[4], joint ? t[5] : reference_joints[5],
-      "TCP", "Base", request->velocity, request->acceleration, request->blend_radius,
-      joint ? 1 : 0, 0, 0, 0, align_z ? "ros_gui_align_z" : "ros_gui_target");
-    if (code == 0 && request->hold_required) {
-      sdk_motion_active_ = true; sdk_motion_kind_ = 2; move_hold_required_ = true;
-      motion_deadline_ = std::chrono::steady_clock::now() + 500ms;
-    }
-    set_response(code, response);
-  }
-  void check_motion_watchdog()
-  {
-    std::lock_guard<std::mutex> lock(sdk_motion_mutex_);
-    if (sdk_motion_active_ && std::chrono::steady_clock::now() > motion_deadline_) {
-      stop_sdk_motion_locked();
-      RCLCPP_ERROR(get_logger(), "SDK GUI motion watchdog expired; robot stop requested");
-    }
-  }
-  int stop_sdk_motion_locked()
-  {
-    const int stopped_kind = sdk_motion_kind_;
-    int jog_code = 0;
-    if (sdk_motion_active_ && sdk_motion_kind_ == 1) {
-      jog_code = jog_mode_ == elfin_robot_msgs::srv::Jog::Request::MODE_JOINT ?
-        HRIF_LongJogJ(box_id_, robot_id_, jog_axis_, jog_direction_, 0) :
-        HRIF_LongJogL(box_id_, robot_id_, jog_axis_, jog_direction_, 0);
-    }
-    const int stop_code = HRIF_GrpStop(box_id_, robot_id_);
-    int standby_code = 0;
-    if (stop_code == 0 && (stopped_kind == 1 || stopped_kind == 2)) {
-      // Both LongJog and WayPoint Hold-to-run can remain in the controller's
-      // long-motion FSM after their stop call on HR6.5.22a. Launch the SDK's
-      // documented Standby recovery while this same SDK connection remains
-      // alive so the next GUI command is accepted.
-      standby_code = HRIF_XToStandby(box_id_, robot_id_);
-    }
-    sdk_motion_active_ = false;
-    sdk_motion_kind_ = 0;
-    move_hold_required_ = false;
-    if (jog_code != 0) {return jog_code;}
-    if (stop_code != 0) {return stop_code;}
-    return standby_code;
-  }
-  void stop_sdk_motion(const char * reason)
-  {
-    std::lock_guard<std::mutex> lock(sdk_motion_mutex_);
-    if (!sdk_motion_active_ || !sdk_connected_) {return;}
-    const int code = stop_sdk_motion_locked();
-    RCLCPP_WARN(get_logger(), "%s: SDK motion stop returned %s", reason, sdk_result(code).c_str());
-  }
-  template<typename ResponseT>
   void set_response(int code, const std::shared_ptr<ResponseT> & response)
   {
     response->success = code == 0; response->message = sdk_result(code);
-  }
-  template<typename ResponseT>
-  bool require_disabled(
-    const std::string & operation, const std::shared_ptr<ResponseT> & response) const
-  {
-    if (!state_received_) {
-      response->success = false;
-      response->message = operation + " rejected: no 10004 robot status has been received";
-      return false;
-    }
-    if (robot_enabled_) {
-      response->success = false;
-      response->message = operation + " rejected: robot must be disabled";
-      return false;
-    }
-    return true;
   }
   void publish_robot_status(const elfin_controller_driver::RtInfo & info)
   {
@@ -569,57 +246,32 @@ private:
     message.error_axis = info.error_axis;
     message.error = message.error_code != 0 ||
       std::any_of(info.axis_error.begin(), info.axis_error.end(), [](int value) {return value != 0;});
-    // BrakeState is the per-axis manual brake-open flag, not the controller FSM.
-    // In normal enabled operation the controller releases the brakes while this flag remains zero.
-    const bool all_manually_released = std::all_of(
+    message.braking = std::any_of(
       info.brake_state.begin(), info.brake_state.begin() + 6, [](int value) {return value != 0;});
-    message.braking = !message.enabled && !all_manually_released;
     message.paused = info.paused != 0;
-    // Physical E-stop fields are not present in 10004. This flag reports the
-    // software safety-guard E-stop requested through this SDK node.
-    message.emergency_stop = soft_estop_active_;
-    message.safeguard_stop = soft_estop_active_;
+    // The supplied RTInfo layout has no independent emergency-stop,
+    // safeguard-stop, or electrified fields. Do not poll SDK to fill them.
+    message.emergency_stop = false;
+    message.safeguard_stop = false;
     message.electrified = false;
     message.controller_connected = true;
     message.blending_done = info.blending_done != 0;
     message.in_position = info.in_position != 0;
-    {
-      std::lock_guard<std::mutex> lock(mode_mutex_);
-      message.freedrive = info.freedrive_mode != 0;
-      message.force_freedrive = force_freedrive_;
-      message.ros_control_active = ros_control_active_;
-    }
+    {std::lock_guard<std::mutex> lock(mode_mutex_); message.freedrive = freedrive_; message.force_freedrive = force_freedrive_;}
     status_publisher_->publish(message);
-
-    elfin_robot_msgs::msg::ElfinBrakeState brake_message;
-    brake_message.header = message.header;
-    for (std::size_t i = 0; i < 6; ++i) {
-      brake_message.raw_state[i] = info.brake_state[i];
-      // Verified on HR6.5.22a virtual controller: OpenBrake changes the selected
-      // axis from 0 to 1. Enabled operation also releases the physical brakes
-      // without setting this manual-open flag.
-      brake_message.released[i] = message.enabled || info.brake_state[i] != 0;
-    }
-    brake_publisher_->publish(brake_message);
   }
   void update_robot_readiness(const elfin_controller_driver::RtInfo & info)
   {
     const bool enabled = info.enabled != 0;
-    robot_moving_ = info.moving != 0;
     const bool error = info.error_code != 0 || info.axis_group_error != 0 ||
       std::any_of(info.axis_error.begin(), info.axis_error.end(), [](int value) {return value != 0;});
-    const bool all_manually_released = std::all_of(
+    const bool braking = std::any_of(
       info.brake_state.begin(), info.brake_state.begin() + 6, [](int value) {return value != 0;});
-    const bool braking = !enabled && !all_manually_released;
     robot_enabled_ = enabled;
     robot_error_ = error;
     robot_paused_ = info.paused != 0;
     robot_braking_ = braking;
     state_received_ = true;
-    {
-      std::lock_guard<std::mutex> lock(mode_mutex_);
-      freedrive_ = info.freedrive_mode != 0;
-    }
 
     const bool ready = enabled && !error && !robot_paused_ && !braking;
     if (!startup_state_decided_.exchange(true)) {
@@ -743,7 +395,6 @@ private:
             silent_ms >= state_disconnect_timeout_ms_) {
           state_received_ = false;
           startup_activation_pending_ = false;
-          stop_sdk_motion("10004 status stream lost");
           RCLCPP_ERROR_THROTTLE(get_logger(), throttle_clock, 2000,
             "10004 pushed-state stream disconnected: %s", error.empty() ? "timeout" : error.c_str());
           if (ros_control_active_) {
@@ -794,23 +445,13 @@ private:
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr enable_service_, ros_control_service_,
     freedrive_service_, force_freedrive_service_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stop_service_;
-  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_service_, pause_service_,
-    continue_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_service_, pause_service_, continue_service_;
   rclcpp::Service<elfin_robot_msgs::srv::SetFloat64>::SharedPtr override_service_, speed_ratio_service_;
   rclcpp::Service<elfin_robot_msgs::srv::SetPose>::SharedPtr tcp_service_, ucs_service_;
-  rclcpp::Service<elfin_robot_msgs::srv::GetPose>::SharedPtr get_tcp_service_;
   rclcpp::Service<elfin_robot_msgs::srv::SetString>::SharedPtr tcp_name_service_, ucs_name_service_;
   rclcpp::Service<elfin_robot_msgs::srv::SetDigitalIO>::SharedPtr digital_io_service_;
   rclcpp::Service<elfin_robot_msgs::srv::SetAnalogIO>::SharedPtr analog_io_service_;
-  rclcpp::Service<elfin_robot_msgs::srv::SetInt16>::SharedPtr collision_level_service_;
-  rclcpp::Service<elfin_robot_msgs::srv::GetInt32>::SharedPtr get_collision_level_service_;
-  rclcpp::Service<elfin_robot_msgs::srv::SetPayload>::SharedPtr payload_service_;
-  rclcpp::Service<elfin_robot_msgs::srv::GetPayload>::SharedPtr get_payload_service_;
-  rclcpp::Service<elfin_robot_msgs::srv::SetBrake>::SharedPtr brake_service_;
-  rclcpp::Service<elfin_robot_msgs::srv::Jog>::SharedPtr jog_service_;
-  rclcpp::Service<elfin_robot_msgs::srv::MoveTarget>::SharedPtr move_target_service_;
   rclcpp::Publisher<elfin_robot_msgs::msg::ElfinRobotStatus>::SharedPtr status_publisher_;
-  rclcpp::Publisher<elfin_robot_msgs::msg::ElfinBrakeState>::SharedPtr brake_publisher_;
   rclcpp::Publisher<elfin_robot_msgs::msg::ElfinIOState>::SharedPtr io_publisher_;
   rclcpp::Publisher<elfin_robot_msgs::msg::ElfinEndIOState>::SharedPtr end_io_publisher_;
   elfin_controller_driver::RtInfoClient state_client_;
@@ -819,19 +460,13 @@ private:
   std::atomic<bool> sdk_connected_{false};
   std::atomic<bool> state_received_{false};
   std::atomic<bool> robot_enabled_{false};
-  std::atomic<bool> robot_moving_{false};
-  std::atomic<bool> soft_estop_active_{false};
   std::atomic<bool> robot_error_{false};
   std::atomic<bool> robot_paused_{false};
   std::atomic<bool> robot_braking_{true};
   std::atomic<bool> ros_control_active_{false};
   std::atomic<bool> startup_state_decided_{false};
   std::atomic<bool> startup_activation_pending_{false};
-  rclcpp::TimerBase::SharedPtr startup_activation_timer_, motion_watchdog_timer_;
-  std::mutex sdk_motion_mutex_;
-  bool sdk_motion_active_{false}, move_hold_required_{false};
-  int sdk_motion_kind_{0}, jog_mode_{0}, jog_axis_{0}, jog_direction_{0};
-  std::chrono::steady_clock::time_point motion_deadline_{};
+  rclcpp::TimerBase::SharedPtr startup_activation_timer_;
   std::chrono::steady_clock::time_point last_status_publish_{}, last_io_publish_{};
 };
 

@@ -16,7 +16,6 @@ struct RtInfo
   std::array<double, 2> analog_output{}, analog_input{};
   std::int32_t controller_state{0};
   std::int32_t enabled{0}, paused{0}, moving{0}, blending_done{0}, in_position{0};
-  std::int32_t freedrive_mode{0};
   std::int32_t error_axis{0}, error_code{0};
   std::array<std::int32_t, 10> brake_state{};
   std::int32_t axis_group_state{0}, axis_group_error{0};

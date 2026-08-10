@@ -10,8 +10,8 @@ def generate_launch_description():
             name='elfin_gui_node',
             output='screen',
             parameters=[
-                {'use_fake_robot': False},
-                {'use_sim_time': False}
+                {'use_fake_robot': True},
+                {'use_sim_time': True}
             ]
         )
     ])

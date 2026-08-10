@@ -83,7 +83,6 @@ void parse_payload(const std::uint8_t * payload, std::size_t size, RtInfo & info
   info.moving = state["robotMoving"].asInt();
   info.blending_done = state["robotBlendingDone"].asInt();
   info.in_position = state["InPos"].asInt();
-  info.freedrive_mode = state["IsFreeDriveMode"].asInt();
   info.error_axis = state["Error_AxisID"].asInt();
   info.error_code = state["Error_Code"].asInt();
   json_array(state["BrakeState"], info.brake_state);

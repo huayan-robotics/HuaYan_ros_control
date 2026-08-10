@@ -78,10 +78,8 @@ $ ros2 launch elfin3_ros2_moveit2 elfin3.launch.py
 Start up elfin basic api and "Elfin Control Panel" interface:
 ```sh
 $ ros2 launch elfin3_ros2_moveit2 elfin3_basic_api.launch.py
+$ ros2 launch elfin_basic_api fake_elfin_gui.launch.py
 ```
-
-The controller-backed Elfin Control Panel is intended for an Elfin controller,
-not the legacy fake/MoveIt GUI simulation path.
 
 > Tutorial about how to use MoveIt! RViz plugin: [docs/moveit_plugin_tutorial_english.md](docs/moveit_plugin_tutorial_english.md)  
 Tips:
@@ -123,7 +121,7 @@ $ ros2 launch elfin3_ros2_moveit2 elfin3_basic_api.launch.py
 Start up "Elfin Control Panel" interface:
 ```sh
 $ sudo su
-$ ros2 launch elfin_basic_api elfin_gui.launch.py robot_model:=E05 robot_ip:=192.168.56.103
+$ ros2 launch elfin_basic_api elfin_gui.launch.py
 ```
 
 Enable the servos of Elfin with "Elfin Control Panel" interface: if there is no "Warning", just press the "Servo On" button to enable the robot. If there is "Warning", press the "Clear Fault" button first and then press the "Servo On" button.

@@ -99,7 +99,7 @@ def _launch(context):
                           "io_publish_rate": LaunchConfiguration("io_publish_rate"),
                           "auto_start_ros_control": mode in {"position", "velocity"},
                           "motion_controller": "elfin_velocity_controller" if mode == "velocity" else "elfin_arm_controller"}],
-             output="screen", respawn=True, respawn_delay=2.0),
+             output="screen"),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(moveit_launch),
             launch_arguments={

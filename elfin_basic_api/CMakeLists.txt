@@ -101,25 +101,24 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
+# REQUIRED to -> Launch simulation:
 install(
-  DIRECTORY launch
-  DESTINATION share/${PROJECT_NAME}
-)
-
-install(
-  FILES README.md README_cn.md elfin_gui.md
-  DESTINATION share/${PROJECT_NAME}
+    DIRECTORY 
+    launch
+    DESTINATION 
+    share/${PROJECT_NAME}
 )
 
 ament_python_install_package(${PROJECT_NAME})
-install(
-  PROGRAMS scripts/elfin_gui.py
+install(PROGRAMS
+  scripts/elfin_gui.py
+  scripts/test.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
-install(
-  PROGRAMS scripts/test.py
-  DESTINATION lib/${PROJECT_NAME}
+install(DIRECTORY  
+  scripts/btn_icon
+  DESTINATION lib/${PROJECT_NAME}/
 )
 
 ament_package()

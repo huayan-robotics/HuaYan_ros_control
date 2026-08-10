@@ -14,6 +14,6 @@
   <depend>rclcpp_lifecycle</depend>
   <depend>sensor_msgs</depend>
   <depend>std_srvs</depend>
-  <depend>libjsoncpp-dev</depend>
+  <depend>jsoncpp</depend>
   <export><build_type>ament_cmake</build_type></export>
 </package>

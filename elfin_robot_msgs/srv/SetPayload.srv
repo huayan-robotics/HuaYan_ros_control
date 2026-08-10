@@ -1,9 +1,0 @@
-# Payload mass in kg and center of gravity in mm.
-float64 mass
-float64[3] center_of_gravity
-
-# HRIF_SetPayload option. The application must validate supported values.
-uint8 option
----
-bool success
-string message

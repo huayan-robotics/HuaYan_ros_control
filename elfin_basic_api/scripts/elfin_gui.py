@@ -1,1569 +1,937 @@
 #!/usr/bin/env python3
-"""Elfin operator panel.
-
-The Brake page communicates only through ROS 2.  It never loads the controller
-SDK directly and never changes controller power or safety-guard state.
+# -*- coding: utf-8 -*-
 """
+Created on Fri Jul 28 12:18:05 2017
 
-import math
-import threading
-import time
-import wx
+@author: Cong Liu
 
+ Software License Agreement (BSD License)
+
+ Copyright (c) 2017, Han's Robot Co., Ltd.
+ All rights reserved.
+
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions
+ are met:
+
+  * Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+  * Redistributions in binary form must reproduce the above
+    copyright notice, this list of conditions and the following
+    disclaimer in the documentation and/or other materials provided
+    with the distribution.
+  * Neither the name of the copyright holders nor the names of its
+    contributors may be used to endorse or promote products derived
+    from this software without specific prior written permission.
+
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+ FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+ COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+ INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+ BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+ ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ POSSIBILITY OF SUCH DAMAGE.
+ 
+"""
+# author: Cong Liu
+
+from __future__ import division
+from tokenize import Double
 import rclpy
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import MultiThreadedExecutor,SingleThreadedExecutor
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup,ReentrantCallbackGroup
+from rcl_interfaces.msg import SetParametersResult
+import rclpy.parameter
 from rclpy.node import Node
-
-from std_srvs.srv import SetBool, Trigger
-
-from elfin_robot_msgs.msg import (
-    ElfinBrakeState,
-    ElfinEndIOState,
-    ElfinIOState,
-    ElfinRealtimeState,
-    ElfinRobotStatus,
-)
-from elfin_robot_msgs.srv import (
-    GetInt32,
-    GetPayload,
-    GetPose,
-    Jog,
-    MoveTarget,
-    SetBrake,
-    SetFloat64,
-    SetInt16,
-    SetPayload,
-    SetPose,
-)
-
-
-BLUE = wx.Colour(49, 132, 214)
-LIGHT_BLUE = wx.Colour(219, 238, 255)
-PALE_BLUE = wx.Colour(237, 247, 255)
-RED = wx.Colour(238, 63, 69)
-YELLOW = wx.Colour(255, 211, 57)
-GREY = wx.Colour(202, 207, 213)
-WHITE = wx.Colour(255, 255, 255)
-BLACK = wx.Colour(30, 30, 30)
-
-
-class GuiRosBridge(Node):
-    """ROS callbacks are forwarded to wx; no wx widget is touched here."""
-
-    def __init__(
-        self, status_callback, brake_callback, realtime_callback, io_callback, end_io_callback
-    ):
-        super().__init__("elfin_gui")
-        self.status_callback = status_callback
-        self.brake_callback = brake_callback
-        self.realtime_callback = realtime_callback
-        self.io_callback = io_callback
-        self.end_io_callback = end_io_callback
-        self.brake_client = self.create_client(SetBrake, "/elfin_sdk/set_brake")
-        self.enable_client = self.create_client(SetBool, "/elfin_sdk/set_enabled")
-        self.reset_client = self.create_client(Trigger, "/elfin_sdk/reset")
-        self.stop_client = self.create_client(Trigger, "/elfin_sdk/stop")
-        self.freedrive_client = self.create_client(SetBool, "/elfin_sdk/set_freedrive")
-        self.ros_control_client = self.create_client(SetBool, "/elfin_sdk/set_ros_control")
-        self.speed_client = self.create_client(SetFloat64, "/elfin_sdk/set_speed_ratio")
-        self.get_tcp_client = self.create_client(GetPose, "/elfin_sdk/get_tcp")
-        self.set_tcp_client = self.create_client(SetPose, "/elfin_sdk/set_tcp")
-        self.get_safety_client = self.create_client(
-            GetInt32, "/elfin_sdk/get_collision_level"
-        )
-        self.set_safety_client = self.create_client(
-            SetInt16, "/elfin_sdk/set_collision_level"
-        )
-        self.get_payload_client = self.create_client(GetPayload, "/elfin_sdk/get_payload")
-        self.set_payload_client = self.create_client(SetPayload, "/elfin_sdk/set_payload")
-        self.jog_client = self.create_client(Jog, "/elfin_sdk/jog")
-        self.move_target_client = self.create_client(MoveTarget, "/elfin_sdk/move_target")
-        self.create_subscription(
-            ElfinRobotStatus, "/elfin_sdk/robot_status", self._on_status, 10
-        )
-        self.create_subscription(
-            ElfinBrakeState, "/elfin_sdk/brake_state", self._on_brake, 10
-        )
-        self.create_subscription(
-            ElfinRealtimeState, "/elfin_sdk/realtime_state", self._on_realtime, 10
-        )
-        self.create_subscription(ElfinIOState, "/elfin_sdk/io_state", self._on_io, 10)
-        self.create_subscription(
-            ElfinEndIOState, "/elfin_sdk/end_io_state", self._on_end_io, 10
-        )
-
-    def _on_status(self, message):
-        wx.CallAfter(self.status_callback, message)
-
-    def _on_brake(self, message):
-        wx.CallAfter(self.brake_callback, message)
-
-    def _on_realtime(self, message):
-        wx.CallAfter(self.realtime_callback, message)
-
-    def _on_io(self, message):
-        wx.CallAfter(self.io_callback, message)
-
-    def _on_end_io(self, message):
-        wx.CallAfter(self.end_io_callback, message)
-
-    @staticmethod
-    def _request(client, request, operation, callback):
-        if not client.service_is_ready():
-            wx.CallAfter(callback, False, f"{operation} service is unavailable", None)
-            return
-        future = client.call_async(request)
-        state = {"finished": False}
-
-        def finish(success, detail, response):
-            if state["finished"]:
-                return
-            state["finished"] = True
-            if timeout.IsRunning():
-                timeout.Stop()
-            callback(success, detail, response)
-
-        timeout = wx.CallLater(
-            2000,
-            finish,
-            False,
-            f"{operation} timed out; elfin_sdk may have stopped",
-            None,
-        )
-
-        def complete(result_future):
-            try:
-                response = result_future.result()
-                wx.CallAfter(finish, response.success, response.message, response)
-            except Exception as error:  # rclpy transport failure
-                wx.CallAfter(finish, False, str(error), None)
-
-        future.add_done_callback(complete)
-
-    def set_enabled(self, enabled, callback):
-        request = SetBool.Request()
-        request.data = enabled
-        self._request(self.enable_client, request, "Servo", callback)
-
-    def reset(self, callback):
-        self._request(self.reset_client, Trigger.Request(), "Clear Fault", callback)
-
-    def stop(self, callback):
-        self._request(self.stop_client, Trigger.Request(), "Stop", callback)
-
-    def set_freedrive(self, enabled, callback):
-        request = SetBool.Request()
-        request.data = enabled
-        self._request(self.freedrive_client, request, "Free Drive", callback)
-
-    def set_ros_control(self, enabled, callback):
-        request = SetBool.Request()
-        request.data = enabled
-        self._request(self.ros_control_client, request, "ROS Control", callback)
-
-    def set_speed(self, ratio, callback):
-        request = SetFloat64.Request()
-        request.data = ratio
-        self._request(self.speed_client, request, "Velocity Scaling", callback)
-
-    def get_tcp(self, callback):
-        self._request(self.get_tcp_client, GetPose.Request(), "Get TCP", callback)
-
-    def set_tcp(self, pose, callback):
-        request = SetPose.Request()
-        request.pose = pose
-        self._request(self.set_tcp_client, request, "Set TCP", callback)
-
-    def get_safety(self, callback):
-        self._request(self.get_safety_client, GetInt32.Request(), "Get Safety Level", callback)
-
-    def set_safety(self, level, callback):
-        request = SetInt16.Request()
-        request.data = level
-        self._request(self.set_safety_client, request, "Set Safety Level", callback)
-
-    def get_payload(self, callback):
-        self._request(self.get_payload_client, GetPayload.Request(), "Get Payload", callback)
-
-    def set_payload(self, mass, cog, callback):
-        request = SetPayload.Request()
-        request.mass = mass
-        request.center_of_gravity = cog
-        request.option = 1
-        self._request(self.set_payload_client, request, "Set Payload", callback)
-
-    def jog(self, mode, axis, direction, action, callback):
-        request = Jog.Request()
-        request.mode = mode
-        request.axis = axis
-        request.direction = direction
-        request.action = action
-        self._request(self.jog_client, request, "Jog", callback)
-
-    def move_target(self, mode, target, action, hold_required, callback):
-        request = MoveTarget.Request()
-        request.mode = mode
-        request.target = target
-        request.velocity = 10.0
-        request.acceleration = 20.0
-        request.blend_radius = 0.0
-        request.action = action
-        request.hold_required = hold_required
-        self._request(self.move_target_client, request, "Move Target", callback)
-
-    def set_brake(self, axis, release, callback):
-        if not self.brake_client.service_is_ready():
-            wx.CallAfter(callback, False, "Brake service /elfin_sdk/set_brake is unavailable")
-            return
-        request = SetBrake.Request()
-        request.axis = axis
-        request.release = release
-        self._request(
-            self.brake_client,
-            request,
-            "Brake",
-            lambda success, message, _response: callback(success, message),
-        )
-
-
-def make_button(parent, label, handler=None, colour=WHITE, size=(-1, 44)):
-    button = wx.Button(parent, label=label, size=size)
-    button.SetBackgroundColour(colour)
-    if handler:
-        button.Bind(wx.EVT_BUTTON, handler)
-    return button
-
-
-def make_text(parent, value="0.000", readonly=False, size=(100, 36)):
-    style = wx.TE_CENTER
-    if readonly:
-        style |= wx.TE_READONLY
-    control = wx.TextCtrl(parent, value=value, size=size, style=style)
-    control.SetBackgroundColour(PALE_BLUE if readonly else WHITE)
-    return control
-
-
-class HeaderBar(wx.Panel):
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.SetBackgroundColour(WHITE)
-        grid = wx.FlexGridSizer(1, 7, 2, 2)
-        # The product title and IP address need more room than the state cells.
-        for column, proportion in enumerate((2, 1, 2, 1, 1, 1, 1)):
-            grid.AddGrowableCol(column, proportion)
-        self.cells = {}
-        values = (
-            ("title", "ELFIN ROBOT\nCONTROL", BLUE),
-            ("model", "Model: E05", BLUE),
-            ("ip", "IP: 192.168.56.103", BLUE),
-            ("sdk", "SDK Connected", BLUE),
-            ("servo", "Servo Off", BLUE),
-            ("fault", "No Fault", BLUE),
-        )
-        for key, label, colour in values:
-            # Keep the colour on a fixed-size panel.  On GTK a StaticText can
-            # shrink to its new label after SetLabel(), exposing white space.
-            cell = wx.Panel(self)
-            cell.SetBackgroundColour(colour)
-            cell_sizer = wx.BoxSizer(wx.VERTICAL)
-            text = wx.StaticText(cell, label=label, style=wx.ALIGN_CENTER)
-            text.SetForegroundColour(WHITE)
-            text.SetBackgroundColour(colour)
-            font = text.GetFont()
-            font.SetPointSize(10 if key == "title" else 11)
-            font.SetWeight(wx.FONTWEIGHT_BOLD)
-            text.SetFont(font)
-            cell_sizer.AddStretchSpacer()
-            cell_sizer.Add(text, 0, wx.ALIGN_CENTER | wx.LEFT | wx.RIGHT, 3)
-            cell_sizer.AddStretchSpacer()
-            cell.SetSizer(cell_sizer)
-            grid.Add(cell, 1, wx.EXPAND)
-            self.cells[key] = text
-        self.stop = make_button(self, "STOP", colour=RED)
-        self.stop.SetForegroundColour(WHITE)
-        self.stop.Bind(wx.EVT_BUTTON, lambda _event: self.GetTopLevelParent().emergency_stop())
-        grid.Add(self.stop, 1, wx.EXPAND)
-        self.SetSizer(grid)
-        self.SetMinSize((-1, 68))
-
-    def set_servo(self, enabled):
-        self.cells["servo"].SetLabel("Servo On" if enabled else "Servo Off")
-
-    def set_fault(self, faulted):
-        self.cells["fault"].SetLabel("Fault" if faulted else "No Fault")
-        # Status cells keep the same blue appearance; only their text changes.
-
-    def set_sdk_connected(self, connected):
-        self.cells["sdk"].SetLabel("SDK Connected" if connected else "SDK Disconnected")
-
-    def show_stop_result(self, label):
-        self.stop.SetLabel(label)
-        self.stop.SetBackgroundColour(RED)
-        self.stop.Refresh()
-
-
-class JogRow(wx.Panel):
-    def __init__(self, parent, name, unit, frame, mode, axis):
-        super().__init__(parent)
-        self.name = name
-        self.unit = unit
-        self.frame = frame
-        self.mode = mode
-        self.axis = axis
-        row = wx.BoxSizer(wx.HORIZONTAL)
-
-        label = wx.StaticText(self, label=name, size=(38, -1), style=wx.ALIGN_CENTER)
-        font = label.GetFont()
-        font.SetWeight(wx.FONTWEIGHT_BOLD)
-        label.SetFont(font)
-        row.Add(label, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
-        self.actual = make_text(self, readonly=True, size=(105, 36))
-        row.Add(self.actual, 0, wx.RIGHT, 5)
-        unit_label = wx.StaticText(self, label=unit, size=(35, -1))
-        row.Add(unit_label, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
-
-        minus = make_button(self, "−", colour=BLUE, size=(42, 36))
-        minus.SetForegroundColour(WHITE)
-        self.target = make_text(self, size=(90, 36))
-        plus = make_button(self, "+", colour=BLUE, size=(42, 36))
-        plus.SetForegroundColour(WHITE)
-        row.Add(minus, 0, wx.RIGHT, 5)
-        row.Add(self.target, 0, wx.RIGHT, 5)
-        row.Add(plus, 0)
-        self.SetSizer(row)
-
-        self._bind_hold(minus, -1)
-        self._bind_hold(plus, 1)
-
-    def _bind_hold(self, button, direction):
-        def start(event):
-            self.frame.start_jog(self.mode, self.axis, direction)
-            event.Skip()
-
-        def stop(event):
-            self.frame.stop_jog()
-            event.Skip()
-
-        button.Bind(wx.EVT_LEFT_DOWN, start)
-        button.Bind(wx.EVT_LEFT_UP, stop)
-
-
-class MainPage(wx.ScrolledWindow):
-    def __init__(self, parent, frame):
-        super().__init__(parent, style=wx.VSCROLL)
-        self.frame = frame
-        self.SetScrollRate(0, 12)
-        root = wx.BoxSizer(wx.VERTICAL)
-        root.AddSpacer(14)
-
-        headings = wx.BoxSizer(wx.HORIZONTAL)
-        for title in ("JOINT JOG", "CARTESIAN JOG"):
-            text = wx.StaticText(self, label=title, style=wx.ALIGN_CENTER)
-            font = text.GetFont()
-            font.SetPointSize(14)
-            font.SetWeight(wx.FONTWEIGHT_BOLD)
-            text.SetFont(font)
-            headings.Add(text, 1, wx.EXPAND)
-        root.Add(headings, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 20)
-
-        jog_area = wx.BoxSizer(wx.HORIZONTAL)
-        joint_box = wx.BoxSizer(wx.VERTICAL)
-        cart_box = wx.BoxSizer(wx.VERTICAL)
-        self.joint_rows = []
-        self.cart_rows = []
-        for i in range(1, 7):
-            jog_row = JogRow(self, f"J{i}", "°", frame, Jog.Request.MODE_JOINT, i - 1)
-            self.joint_rows.append(jog_row)
-            joint_box.Add(jog_row, 0, wx.EXPAND | wx.ALL, 2)
-        for axis, (name, unit) in enumerate((("X", "mm"), ("Y", "mm"), ("Z", "mm"),
-                                             ("RX", "°"), ("RY", "°"), ("RZ", "°"))):
-            jog_row = JogRow(self, name, unit, frame, Jog.Request.MODE_CARTESIAN, axis)
-            self.cart_rows.append(jog_row)
-            cart_box.Add(jog_row, 0, wx.EXPAND | wx.ALL, 2)
-        jog_area.Add(joint_box, 1, wx.EXPAND | wx.RIGHT, 15)
-        jog_area.Add(cart_box, 1, wx.EXPAND | wx.LEFT, 15)
-        root.Add(jog_area, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP | wx.BOTTOM, 16)
-
-        quick = wx.BoxSizer(wx.HORIZONTAL)
-        home = make_button(self, "Home", colour=BLUE)
-        self.align_button = make_button(self, "Z-axis Alignment", colour=BLUE)
-        synchronize = make_button(
-            self,
-            "Synchronize",
-            lambda _e: self.synchronize_targets(),
-            BLUE,
-        )
-        quick.Add(home, 1, wx.RIGHT, 12)
-        quick.Add(self.align_button, 1, wx.RIGHT, 12)
-        quick.Add(synchronize, 1, wx.RIGHT, 12)
-        hold = make_button(self, "Hold-to-run to Target", colour=BLUE)
-
-        def start_hold(event):
-            frame.start_hold_target(self.target_mode)
-            event.Skip()
-
-        def stop_hold(event):
-            frame.stop_target()
-            event.Skip()
-
-        hold.Bind(wx.EVT_LEFT_DOWN, start_hold)
-        hold.Bind(wx.EVT_LEFT_UP, stop_hold)
-        self._bind_target_hold(home, MoveTarget.Request.MODE_HOME)
-        self._bind_target_hold(self.align_button, MoveTarget.Request.MODE_ALIGN_Z)
-        quick.Add(hold, 1)
-        for child in quick.GetChildren():
-            window = child.GetWindow()
-            if window:
-                window.SetForegroundColour(WHITE)
-        root.Add(quick, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 20)
-
-        speed = wx.BoxSizer(wx.HORIZONTAL)
-        speed.Add(
-            wx.StaticText(self, label="Velocity Scaling"),
-            0,
-            wx.ALIGN_CENTER_VERTICAL | wx.RIGHT,
-            15,
-        )
-        self.speed_slider = wx.Slider(self, value=20, minValue=1, maxValue=100)
-        self.speed_value = wx.StaticText(self, label="20 %", size=(65, -1), style=wx.ALIGN_CENTER)
-        self.speed_slider.Bind(wx.EVT_SLIDER, self.on_speed)
-        self.speed_request = None
-        speed.Add(self.speed_slider, 1, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 15)
-        speed.Add(self.speed_value, 0, wx.ALIGN_CENTER_VERTICAL)
-        root.Add(speed, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 22)
-
-        # Direct actions stay on the first row; these buttons do not change page.
-        controls = wx.GridSizer(1, 5, 14, 14)
-        controls.Add(
-            make_button(self, "Servo On", lambda _e: frame.set_servo(True), LIGHT_BLUE),
-            1,
-            wx.EXPAND,
-        )
-        controls.Add(
-            make_button(self, "Servo Off", lambda _e: frame.set_servo(False), LIGHT_BLUE),
-            1,
-            wx.EXPAND,
-        )
-        controls.Add(
-            make_button(self, "Clear Fault", lambda _e: frame.clear_fault(), LIGHT_BLUE),
-            1,
-            wx.EXPAND,
-        )
-        self.free_drive = make_button(self, "Free Drive", self.toggle_free_drive, LIGHT_BLUE)
-        controls.Add(self.free_drive, 1, wx.EXPAND)
-        self.ros = make_button(self, "ROS Activate", self.toggle_ros, LIGHT_BLUE)
-        controls.Add(self.ros, 1, wx.EXPAND)
-        root.Add(controls, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 22)
-
-        # Page navigation occupies a separate five-button row.
-        navigation = wx.GridSizer(1, 5, 14, 14)
-        for label, page in (("Safety Level", "safety"), ("Set I/O", "io"),
-                            ("Payload", "payload"), ("TCP", "tcp"), ("Brake", "brake")):
-            navigation.Add(
-                make_button(self, label, lambda _e, p=page: frame.show_page(p), BLUE),
-                1,
-                wx.EXPAND,
-            )
-        for child in navigation.GetChildren():
-            child.GetWindow().SetForegroundColour(WHITE)
-        root.Add(navigation, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 18)
-        self.SetSizer(root)
-
-        self.free_drive_enabled = False
-        self.free_drive_pending = None
-        self.free_drive_failure_until = 0.0
-        self.free_drive_failure_label = ""
-        self.ros_active = False
-        self.target_mode = MoveTarget.Request.MODE_JOINT
-        for row in self.joint_rows:
-            row.target.Bind(
-                wx.EVT_TEXT,
-                lambda _e: self._set_target_mode(MoveTarget.Request.MODE_JOINT),
-            )
-        for row in self.cart_rows:
-            row.target.Bind(
-                wx.EVT_TEXT,
-                lambda _e: self._set_target_mode(MoveTarget.Request.MODE_CARTESIAN),
-            )
-
-    def _bind_target_hold(self, button, mode):
-        def start(event):
-            self.frame.start_special_target(mode)
-            event.Skip()
-
-        def stop(event):
-            self.frame.stop_target()
-            event.Skip()
-
-        button.Bind(wx.EVT_LEFT_DOWN, start)
-        button.Bind(wx.EVT_LEFT_UP, stop)
-
-    def _set_target_mode(self, mode):
-        self.target_mode = mode
-
-    def synchronize_targets(self):
-        for row in self.joint_rows + self.cart_rows:
-            row.target.SetValue(row.actual.GetValue())
-
-    def target_values(self, mode):
-        rows = self.joint_rows if mode == MoveTarget.Request.MODE_JOINT else self.cart_rows
-        return [float(row.target.GetValue()) for row in rows]
-
-    def on_speed(self, _event):
-        value = self.speed_slider.GetValue()
-        if self.speed_request is not None and self.speed_request.IsRunning():
-            self.speed_request.Stop()
-        self.speed_request = wx.CallLater(50, self.frame.set_speed, value / 100.0)
-
-    def toggle_free_drive(self, _event):
-        self.frame.set_freedrive(not self.free_drive_enabled)
-
-    def toggle_ros(self, _event):
-        self.frame.set_ros_control(not self.ros_active)
-
-    def update_robot_status(self, message):
-        self.free_drive_enabled = message.freedrive
-        self.ros_active = message.ros_control_active
-        preserve_feedback = False
-        if self.free_drive_pending is not None:
-            if message.freedrive == self.free_drive_pending:
-                self.free_drive_pending = None
-            else:
-                self.free_drive.Enable(False)
-                preserve_feedback = True
-        if time.monotonic() < self.free_drive_failure_until:
-            self.free_drive.SetLabel(self.free_drive_failure_label)
-            self.free_drive.Enable(True)
-            preserve_feedback = True
-        if not preserve_feedback:
-            self.free_drive.SetLabel("Exit Free Drive" if message.freedrive else "Free Drive")
-            self.free_drive.SetBackgroundColour(YELLOW if message.freedrive else LIGHT_BLUE)
-            self.free_drive.Enable(message.sdk_connected)
-            self.free_drive.Refresh()
-        self.ros.SetLabel("ROS Inactivate" if message.ros_control_active else "ROS Activate")
-
-    def set_freedrive_pending(self, entering):
-        self.free_drive_pending = entering
-        self.free_drive.SetLabel("Entering..." if entering else "Exiting...")
-        self.free_drive.Enable(False)
-
-    def set_freedrive_failure(self, detail):
-        self.free_drive_pending = None
-        if "20606" in detail:
-            label = "Free Drive Disabled"
-        elif "40097" in detail:
-            label = "No Force Sensor"
+from rclpy.duration import Duration
+import time
+from rclpy.timer import Timer
+from rclpy.action import ActionClient
+import math
+import os # 20201209: add os path
+import tf2_ros
+from tf2_ros import LookupException, ConnectivityException, ExtrapolationException
+
+from std_msgs.msg import Bool, String,Float32
+from  std_srvs.srv._set_bool import SetBool,SetBool_Request, SetBool_Response
+from elfin_robot_msgs.srv._elfin_iod_read import ElfinIODRead_Request, ElfinIODRead_Response,ElfinIODRead
+from elfin_robot_msgs.srv._elfin_iod_write import ElfinIODWrite_Request, ElfinIODWrite_Response,ElfinIODWrite
+from elfin_robot_msgs.srv._set_int16 import SetInt16_Request, SetInt16_Response,SetInt16
+from elfin_robot_msgs.srv._set_string import SetString_Request,SetString_Response,SetString
+import moveit_msgs.action._move_group
+import wx
+from sensor_msgs.msg import JointState
+import transforms3d
+import geometry_msgs.msg
+from rclpy.action import ActionServer, CancelResponse, GoalResponse
+from geometry_msgs.msg import Quaternion
+from control_msgs.action import FollowJointTrajectory
+from control_msgs.action._follow_joint_trajectory import FollowJointTrajectory_Goal
+import threading
+
+class MyFrame(wx.Frame,Node):  
+  
+    def __init__(self,parent,id):  
+        rclpy.init(args=None)
+        self.node = rclpy.create_node('elfin_basic_gui')
+        self.gui_node = rclpy.create_node('elfin_gui_node_test')
+ 
+        the_size=(700, 720) # height from 550 change to 700
+        wx.Frame.__init__(self,parent,id,'Elfin Control Panel',pos=(250,100)) 
+        self.panel=wx.Panel(self)
+        font=self.panel.GetFont()
+        font.SetPixelSize((12, 24))
+        self.panel.SetFont(font)
+        self.tfBuffer = tf2_ros.Buffer()
+        self.listener = tf2_ros.TransformListener(self.tfBuffer,self.gui_node)
+
+        self.callback_group = ReentrantCallbackGroup()
+        
+        self.controller_ns="elfin_arm_controller/"
+        self.elfin_driver_ns='elfin_ros_control/elfin/'
+        self.elfin_IO_ns='elfin_ros_control/elfin/io_port1/' # 20201126: add IO ns
+
+        self.publisher_ = self.node.create_publisher(Float32, 'vel', 10)
+
+        self.call_read_do_req = ElfinIODRead_Request() # ElfinIODReadRequest()
+        self.call_read_di_req = ElfinIODRead_Request() # ElfinIODReadRequest()
+        self.call_read_do_req.data = True
+        self.call_read_di_req.data = True
+        self.call_read_do = self.node.create_client(ElfinIODRead, '/read_do')
+        self.call_read_di = self.node.create_client(ElfinIODRead, '/read_di')
+
+        # 20201126: add service for write_do
+        self.call_write_DO=self.node.create_client(ElfinIODWrite, '/write_do')
+        
+        self.elfin_basic_api_ns='elfin_basic_api/'
+
+        self.node.declare_parameter('use_fake_robot', True)
+        self.use_fake_robot = self.node.get_parameter('use_fake_robot').get_parameter_value().bool_value
+
+        self.node.declare_parameter(self.controller_ns+"joints", ["elfin_joint1","elfin_joint2","elfin_joint3","elfin_joint4","elfin_joint5","elfin_joint6"])
+        self.joint_names=self.node.get_parameter(self.controller_ns+"joints").get_parameter_value().string_array_value
+        
+        self.ref_link_name="world" # self.group.get_planning_frame()
+        self.end_link_name="elfin_end_link" # self.group.get_end_effector_link()
+        
+        self.ref_link_lock=threading.Lock()
+        self.end_link_lock=threading.Lock()
+        self.DO_btn_lock = threading.Lock() # 20201208: add the threading lock
+        self.DI_show_lock = threading.Lock()
+
+        self.node_lock = threading.Lock()
+
+        self.current_joint_val=[0]*6
+        self.js_display=[0]*6 # joint_states
+        self.jm_button=[0]*6 # joints_minus
+        self.jp_button=[0]*6 # joints_plus
+        self.js_label=[0]*6 # joint_states
+                      
+        self.ps_display=[0]*6 # pcs_states
+        self.pm_button=[0]*6 # pcs_minus
+        self.pp_button=[0]*6 # pcs_plus
+        self.ps_label=[0]*6 # pcs_states
+
+        # 20201208: add the button array
+        self.DO_btn_display=[0]*4 # DO states
+        self.DI_display=[0]*4 # DI states
+        self.LED_display=[0]*4 # LED states
+        self.End_btn_display=[0]*4 # end button states
+
+        self.btn_height=370 # 20201126: from 390 change to 370
+        self.btn_path = os.path.dirname(os.path.realpath(__file__)) # 20201209: get the elfin_gui.py path
+        btn_lengths=[]
+        self.DO_DI_btn_length=[0,92,157,133] # 20201209: the length come from servo on, servo off, home, stop button
+        self.btn_interstice=22 # 20201209: come from btn_interstice
+
+        self.display_init()              
+        self.key=[]
+        self.DO_btn=[0,0,0,0,0,0,0,0] # DO state, first four bits is DO, the other is LED
+        self.DI_show=[0,0,0,0,0,0,0,0] # DI state, first four bits is DI, the other is the end button
+                
+        self.power_on_btn=wx.Button(self.panel, label=' Servo On ', name='Servo On',
+                                    pos=(20, self.btn_height))
+        btn_lengths.append(self.power_on_btn.GetSize()[0])
+        btn_total_length=btn_lengths[0]
+        
+        self.power_off_btn=wx.Button(self.panel, label=' Servo Off ', name='Servo Off')
+        btn_lengths.append(self.power_off_btn.GetSize()[0])
+        btn_total_length+=btn_lengths[1]
+        
+        self.reset_btn=wx.Button(self.panel, label=' Clear Fault ', name='Clear Fault')
+        btn_lengths.append(self.reset_btn.GetSize()[0])
+        btn_total_length+=btn_lengths[2]
+
+        self.home_btn=wx.Button(self.panel, label='Home', name='home_btn')
+        btn_lengths.append(self.home_btn.GetSize()[0])
+        btn_total_length+=btn_lengths[3]
+        
+        self.stop_btn=wx.Button(self.panel, label='Stop', name='Stop')
+        btn_lengths.append(self.stop_btn.GetSize()[0])
+        btn_total_length+=btn_lengths[4]
+
+        self.btn_interstice=(550-btn_total_length)/4
+        btn_pos_tmp=btn_lengths[0]+self.btn_interstice+20 # 20201126: 20:init length + btn0 length + btn_inter:gap
+        self.power_off_btn.SetPosition((int(btn_pos_tmp), self.btn_height))
+        
+        btn_pos_tmp+=btn_lengths[1]+self.btn_interstice
+        self.reset_btn.SetPosition((int(btn_pos_tmp), self.btn_height))
+        
+        btn_pos_tmp+=btn_lengths[2]+self.btn_interstice
+        self.home_btn.SetPosition((int(btn_pos_tmp), self.btn_height))
+        
+        btn_pos_tmp+=btn_lengths[3]+self.btn_interstice
+        self.stop_btn.SetPosition((int(btn_pos_tmp), self.btn_height))
+        
+        self.servo_state_label=wx.StaticText(self.panel, label='Servo state:',
+                                              pos=(590, self.btn_height-10))
+        self.servo_state_show=wx.TextCtrl(self.panel, style=(wx.TE_CENTER |wx.TE_READONLY),
+                                    value='', pos=(600, self.btn_height+10))
+        self.servo_state=bool()
+        
+        self.servo_state_lock=threading.Lock()
+        
+        self.fault_state_label=wx.StaticText(self.panel, label='Fault state:',
+                                              pos=(590, self.btn_height+60))
+        self.fault_state_show=wx.TextCtrl(self.panel, style=(wx.TE_CENTER |wx.TE_READONLY),
+                                    value='', pos=(600, self.btn_height+80))
+        self.fault_state=bool()
+        
+        self.fault_state_lock=threading.Lock()
+
+        # 20201209: add the description of end button
+        self.end_button_state_label=wx.StaticText(self.panel, label='END Button state',
+                                            pos=(555,self.btn_height+172))
+        
+        self.reply_show_label=wx.StaticText(self.panel, label='Result:',
+                                           pos=(20, self.btn_height+260)) # 20201126: btn_height from 120 change to 260.
+        self.reply_show=wx.TextCtrl(self.panel, style=(wx.TE_CENTER |wx.TE_READONLY),
+                                    value='', size=(670, 30), pos=(20, self.btn_height+280))# 20201126: btn_height from 140 change to 280.
+        
+        link_textctrl_length=int((btn_pos_tmp-40)/2)
+        
+        self.ref_links_show_label=wx.StaticText(self.panel, label='Ref. link:',
+                                                    pos=(20, self.btn_height+210)) # 20201126: btn_height from 60 change to 210.
+        
+        self.ref_link_show=wx.TextCtrl(self.panel, style=(wx.TE_READONLY),
+                                           value=self.ref_link_name, size=(link_textctrl_length, 30),
+                                           pos=(20, self.btn_height+230)) # 20201126: btn_height from 80 change to 230.
+        
+        self.end_link_show_label=wx.StaticText(self.panel, label='End link:',
+                                               pos=(link_textctrl_length+30, self.btn_height+210))# 20201126: btn_height from 80 change to 200.
+        
+        self.end_link_show=wx.TextCtrl(self.panel, style=(wx.TE_READONLY),
+                                       value=self.end_link_name, size=(link_textctrl_length, 30),
+                                       pos=(link_textctrl_length+30, self.btn_height+230))
+        
+        self.set_links_btn=wx.Button(self.panel, label='Set links', name='Set links')
+        self.set_links_btn.SetPosition((int(btn_pos_tmp), self.btn_height+230)) # 20201126: btn_height from 75 change to 220.
+        
+        # the variables about velocity scaling
+        self.node.declare_parameter('velocity_scaling', 0.4)
+        velocity_scaling_init=self.node.get_parameter('velocity_scaling').get_parameter_value().double_value
+        default_velocity_scaling=str(round(velocity_scaling_init*100, 2))
+        self.velocity_setting_label=wx.StaticText(self.panel, label='Velocity Scaling',
+                                                  pos=(20, self.btn_height-55)) # 20201126: btn_height from 70 change to 55
+        self.velocity_setting=wx.Slider(self.panel, value=int(velocity_scaling_init*100),
+                                        minValue=1, maxValue=100,
+                                        style = wx.SL_HORIZONTAL,
+                                        size=(500, 30),
+                                        pos=(45, self.btn_height-35)) # 20201126: btn_height from 70 change to 35
+        self.velocity_setting_txt_lower=wx.StaticText(self.panel, label='1%',
+                                                    pos=(20, self.btn_height-35)) # 20201126: btn_height from 45 change to 35
+        self.velocity_setting_txt_upper=wx.StaticText(self.panel, label='100%',
+                                                    pos=(550, self.btn_height-35))# 20201126: btn_height from 45 change to 35
+        self.velocity_setting_show=wx.TextCtrl(self.panel, 
+                                               style=(wx.TE_CENTER|wx.TE_READONLY), 
+                                                value=default_velocity_scaling+'%',
+                                                pos=(600, self.btn_height-45))# 20201126: btn_height from 55 change to 45
+        self.velocity_setting.Bind(wx.EVT_SLIDER, self.velocity_setting_cb)
+ 
+        self.teleop_api_dynamic_reconfig_client = self.node.add_on_set_parameters_callback(self.basic_api_reconfigure_cb)
+        self.dlg=wx.Dialog(self.panel, title='message')
+        self.dlg.Bind(wx.EVT_CLOSE, self.closewindow)
+        self.dlg_panel=wx.Panel(self.dlg)
+        self.dlg_label=wx.StaticText(self.dlg_panel, label='hello', pos=(15, 15))
+        
+        self.set_links_dlg=wx.Dialog(self.panel, title='Set links', size=(400, 100))
+        self.set_links_dlg_panel=wx.Panel(self.set_links_dlg)
+        
+        self.sld_ref_link_show=wx.TextCtrl(self.set_links_dlg_panel, style=wx.TE_PROCESS_ENTER,
+                                           value='', pos=(20, 20), size=(link_textctrl_length, 30))
+        self.sld_end_link_show=wx.TextCtrl(self.set_links_dlg_panel, style=wx.TE_PROCESS_ENTER,
+                                           value='', pos=(20, 70), size=(link_textctrl_length, 30))
+        
+        self.sld_set_ref_link_btn=wx.Button(self.set_links_dlg_panel, label='Update ref. link',
+                                            name='Update ref. link')
+        self.sld_set_ref_link_btn.SetPosition((link_textctrl_length+30, 15))
+        self.sld_set_end_link_btn=wx.Button(self.set_links_dlg_panel, label='Update end link',
+                                            name='Update end link')
+        self.sld_set_end_link_btn.SetPosition((link_textctrl_length+30, 65))
+        
+        self.set_links_dlg.SetSize((link_textctrl_length+self.sld_set_ref_link_btn.GetSize()[0]+50, 120))
+        
+                        
+        self.call_teleop_joint=self.node.create_client(SetInt16,'/joint_teleop')
+        self.call_teleop_joint_req=SetInt16_Request()
+        
+        self.call_teleop_cart=self.node.create_client(SetInt16, '/cart_teleop')
+        self.call_teleop_cart_req=SetInt16_Request()
+        
+        self.call_teleop_stop=self.node.create_client(SetBool,'/stop_teleop')
+        self.call_teleop_stop_req=SetBool_Request()
+        
+        self.call_stop=self.node.create_client(SetBool,'/stop_teleop')
+        self.call_stop_req=SetBool_Request()
+        self.call_stop_req.data=True
+        self.stop_btn.Bind(wx.EVT_BUTTON, 
+                           lambda evt, cl=self.call_stop,
+                           rq=self.call_stop_req :
+                           self.call_set_bool_common(evt, cl, rq))
+            
+        self.call_reset=self.node.create_client(SetBool,'/clear_fault')
+        self.call_reset_req=SetBool_Request()
+        self.call_reset_req.data=True
+        self.reset_btn.Bind(wx.EVT_BUTTON, 
+                           lambda evt, cl=self.call_reset,
+                           rq=self.call_reset_req :
+                           self.call_set_bool_common(evt, cl, rq))
+        
+        if self.use_fake_robot:
+            self.call_power_on=self.node.create_client(SetBool,'/elfin_basic_api/enable_robot')
         else:
-            label = "Free Drive Failed"
-        self.free_drive_failure_label = label
-        self.free_drive_failure_until = time.monotonic() + 5.0
-        self.free_drive.SetLabel(label)
-        self.free_drive.Enable(True)
-
-    def set_alignment_state(self, label, active=False):
-        self.align_button.SetLabel(label)
-        self.align_button.SetBackgroundColour(YELLOW if active else BLUE)
-        self.align_button.Refresh()
-
-    def update_realtime(self, message):
-        for row, value in zip(self.joint_rows, message.joint_position_actual):
-            row.actual.SetValue(f"{math.degrees(value):.3f}")
-        for index, (row, value) in enumerate(zip(self.cart_rows, message.tcp_position_actual)):
-            displayed = value * 1000.0 if index < 3 else math.degrees(value)
-            row.actual.SetValue(f"{displayed:.3f}")
-        percentage = max(1, min(100, round(message.speed_scaling * 100.0)))
-        if not self.speed_slider.HasCapture():
-            self.speed_slider.SetValue(percentage)
-        self.speed_value.SetLabel(f"{percentage} %")
-
-
-class SubPage(wx.Panel):
-    def __init__(self, parent, frame, title):
-        super().__init__(parent)
-        self.frame = frame
-        self.root = wx.BoxSizer(wx.VERTICAL)
-        top = wx.BoxSizer(wx.HORIZONTAL)
-        top.Add(
-            make_button(self, "←  Back", lambda _e: frame.show_page("main"), size=(115, 42)),
-            0,
-            wx.ALIGN_CENTER_VERTICAL,
-        )
-        heading = wx.StaticText(
-            self,
-            label=title,
-            size=(-1, 58),
-            style=wx.ALIGN_CENTER | wx.ST_NO_AUTORESIZE,
-        )
-        font = heading.GetFont()
-        font.SetPointSize(20)
-        font.SetWeight(wx.FONTWEIGHT_BOLD)
-        heading.SetFont(font)
-        top.Add(heading, 1, wx.EXPAND | wx.RIGHT, 115)
-        self.root.Add(top, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 20)
-        self.SetSizer(self.root)
-
-    def add_actions(self, save_handler, cancel_handler):
-        actions = wx.BoxSizer(wx.HORIZONTAL)
-        actions.AddStretchSpacer()
-        save = make_button(self, "Save", save_handler, BLUE, (130, 45))
-        save.SetForegroundColour(WHITE)
-        actions.Add(save, 0, wx.RIGHT, 15)
-        cancel = make_button(self, "Cancel", cancel_handler, WHITE, (130, 45))
-        actions.Add(cancel, 0)
-        self.root.Add(actions, 0, wx.EXPAND | wx.ALL, 25)
-        return save, cancel
-
-
-class SafetyPage(SubPage):
-    def __init__(self, parent, frame):
-        super().__init__(parent, frame, "Safety Level")
-        self.saved_level = 0
-        self.selected_level = 0
-        self.buttons = []
-        row = wx.BoxSizer(wx.HORIZONTAL)
-        row.AddStretchSpacer()
-        for level in range(6):
-            button = make_button(
-                self, str(level), lambda _e, n=level: self.select(n), size=(105, 72)
-            )
-            font = button.GetFont()
-            font.SetPointSize(18)
-            font.SetWeight(wx.FONTWEIGHT_BOLD)
-            button.SetFont(font)
-            self.buttons.append(button)
-            row.Add(button, 0, wx.RIGHT, 8)
-        row.AddStretchSpacer()
-        self.root.AddStretchSpacer()
-        self.root.Add(row, 0, wx.EXPAND | wx.ALL, 25)
-        self.root.AddStretchSpacer()
-        self.save_button, self.cancel_button = self.add_actions(self.save, self.cancel)
-        self.select(0)
-
-    def set_write_allowed(self, allowed):
-        self.save_button.Enable(allowed)
-
-    def set_level(self, level):
-        self.saved_level = level
-        self.select(level)
-
-    def select(self, level):
-        self.selected_level = level
-        for index, button in enumerate(self.buttons):
-            button.SetBackgroundColour(YELLOW if index <= level else WHITE)
-            button.Refresh()
-        self.frame.set_status(f"Safety level {level} selected (not saved)")
-
-    def save(self, _event):
-        self.frame.set_safety(self.selected_level)
-
-    def cancel(self, _event):
-        self.frame.read_safety()
-
-
-class IoPage(SubPage):
-    def __init__(self, parent, frame):
-        super().__init__(parent, frame, "I/O Status")
-        self.values = {}
-        grid = wx.FlexGridSizer(6, 9, 9, 12)
-        for prefix, count in (
-            ("DI", 8), ("DO", 8), ("CI", 8), ("CO", 8), ("EndDI", 4), ("EndDO", 4)
-        ):
-            label = wx.StaticText(
-                self,
-                label=prefix,
-                size=(72, -1),
-                style=wx.ALIGN_RIGHT | wx.ST_NO_AUTORESIZE,
-            )
-            font = label.GetFont()
-            font.SetWeight(wx.FONTWEIGHT_BOLD)
-            label.SetFont(font)
-            grid.Add(label, 0, wx.ALIGN_CENTER_VERTICAL)
-            for index in range(8):
-                if index < count:
-                    name = f"{prefix}{index}"
-                    button = make_button(self, name, size=(86, 44))
-                    self.values[name] = button
-                    grid.Add(button, 0, wx.EXPAND)
-                else:
-                    grid.AddSpacer(1)
-        # Do not use vertical stretch spacers here: they can push the EndDO
-        # row and action buttons below the visible area on a short display.
-        legend = wx.StaticText(self, label="Yellow = ON    Grey = OFF    White = unavailable")
-        self.live = wx.StaticText(self, label="Waiting for /elfin_sdk/io_state...")
-        self.root.Add(grid, 0, wx.ALIGN_CENTER | wx.LEFT | wx.RIGHT | wx.TOP, 28)
-        self.root.Add(legend, 0, wx.ALIGN_CENTER | wx.TOP, 15)
-        self.root.Add(self.live, 0, wx.ALIGN_CENTER | wx.TOP, 8)
-
-    def update_channels(self, prefix, values):
-        for index in range(8):
-            button = self.values.get(f"{prefix}{index}")
-            if button is None:
-                continue
-            value = values[index] if index < len(values) else -1
-            if value < 0:
-                colour = WHITE
-                state = "N/A"
-            else:
-                colour = YELLOW if value != 0 else GREY
-                state = "ON" if value != 0 else "OFF"
-            button.SetLabel(f"{prefix}{index}\n{state}")
-            button.SetToolTip(f"10004 raw value: {value}")
-            button.SetBackgroundColour(colour)
-            button.Refresh()
-        self.live.SetLabel(f"Live controller feedback: {time.strftime('%H:%M:%S')}")
-
-
-class BrakeAxisControl(wx.Panel):
-    """Brake tile with reliably centred text on GTK."""
-
-    def __init__(self, parent, axis, handler):
-        super().__init__(parent, size=(150, 120), style=wx.BORDER_SIMPLE)
-        self.axis = axis
-        self.handler = handler
-        self.click_enabled = False
-        self.pressed = False
-        content = wx.BoxSizer(wx.VERTICAL)
-        content.AddStretchSpacer()
-        self.axis_text = wx.StaticText(
-            self,
-            label=f"Axis{axis}",
-            size=(140, 26),
-            style=wx.ALIGN_CENTER | wx.ST_NO_AUTORESIZE,
-        )
-        self.axis_text.SetMinSize((140, 26))
-        axis_font = self.axis_text.GetFont()
-        axis_font.SetPointSize(13)
-        self.axis_text.SetFont(axis_font)
-        self.state_text = wx.StaticText(
-            self,
-            label="Hold to Release",
-            size=(140, 24),
-            style=wx.ALIGN_CENTER | wx.ST_NO_AUTORESIZE,
-        )
-        self.state_text.SetMinSize((140, 24))
-        content.Add(self.axis_text, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 5)
-        content.AddSpacer(18)
-        content.Add(self.state_text, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 5)
-        content.AddStretchSpacer()
-        self.SetSizer(content)
-        for control in (self, self.axis_text, self.state_text):
-            control.Bind(wx.EVT_LEFT_DOWN, self.on_press)
-            control.Bind(wx.EVT_LEFT_UP, self.on_release)
-        self.Bind(wx.EVT_MOUSE_CAPTURE_LOST, self.on_capture_lost)
-        self.set_state(False, False)
-
-    def on_press(self, event):
-        if self.click_enabled and not self.pressed:
-            self.pressed = True
-            if not self.HasCapture():
-                self.CaptureMouse()
-            self.handler(True)
-        event.Skip()
-
-    def on_release(self, event):
-        if self.pressed:
-            self.pressed = False
-            if self.HasCapture():
-                self.ReleaseMouse()
-            self.handler(False)
-        event.Skip()
-
-    def on_capture_lost(self, _event):
-        if self.pressed:
-            self.pressed = False
-            self.handler(False)
-
-    def set_state(self, released, change_allowed):
-        self.click_enabled = change_allowed
-        colour = GREY if released else BLUE
-        self.SetBackgroundColour(colour)
-        self.axis_text.SetBackgroundColour(colour)
-        self.state_text.SetBackgroundColour(colour)
-        if released:
-            label = "Released"
-        elif change_allowed:
-            label = "Hold to Release"
+            self.call_power_on = self.node.create_client(SetBool,'/enable_robot')
+        self.call_power_on_req=SetBool_Request()
+        self.call_power_on_req.data=True
+        self.power_on_btn.Bind(wx.EVT_BUTTON, 
+                               lambda evt, cl=self.call_power_on,
+                               rq=self.call_power_on_req :
+                               self.call_set_bool_common(evt, cl, rq))
+        
+        if self.use_fake_robot:
+            self.call_power_off=self.node.create_client(SetBool,'/elfin_basic_api/disable_robot')
         else:
-            label = "Unavailable"
-        self.state_text.SetLabel(label)
-        self.SetCursor(wx.Cursor(wx.CURSOR_HAND if change_allowed else wx.CURSOR_ARROW))
-        self.Layout()
-        self.Refresh()
+            self.call_power_off=self.node.create_client(SetBool,'/disable_robot')
+        self.call_power_off_req=SetBool_Request()
+        self.call_power_off_req.data=True
+        self.power_off_btn.Bind(wx.EVT_BUTTON, 
+                               lambda evt, cl=self.call_power_off,
+                               rq=self.call_power_off_req :
+                               self.call_set_bool_common(evt, cl, rq))
+                
+        self.call_move_homing=self.node.create_client(SetBool,'/home_teleop')
+        self.call_move_homing_req=SetBool_Request()
+        self.call_move_homing_req.data=True
+        self.home_btn.Bind(wx.EVT_LEFT_DOWN, 
+                           lambda evt, cl=self.call_move_homing,
+                           rq=self.call_move_homing_req :
+                           self.call_set_bool_common(evt, cl, rq))
+        self.home_btn.Bind(wx.EVT_LEFT_UP,
+                           lambda evt, mark=100:
+                           self.release_button(evt, mark) )
+            
+        self.call_set_ref_link=self.node.create_client(SetString, '/set_reference_link')
+        self.call_set_end_link=self.node.create_client(SetString, '/set_end_link')
+        self.set_links_btn.Bind(wx.EVT_BUTTON, self.show_set_links_dialog)
+        
+        self.sld_set_ref_link_btn.Bind(wx.EVT_BUTTON, self.update_ref_link)
+        self.sld_set_end_link_btn.Bind(wx.EVT_BUTTON, self.update_end_link)
+        
+        self.sld_ref_link_show.Bind(wx.EVT_TEXT_ENTER, self.update_ref_link)
+        self.sld_end_link_show.Bind(wx.EVT_TEXT_ENTER, self.update_end_link)
+            
+        self.action_client=ActionClient(self.node,FollowJointTrajectory,self.controller_ns+'follow_joint_trajectory')
+        self.action_goal=FollowJointTrajectory_Goal()
+        self.action_goal.trajectory.joint_names=self.joint_names
+        
+        self.SetMinSize(the_size)
+        self.SetMaxSize(the_size)
+    
+    def display_init(self):
+        js_pos=[20, 20]
+        js_btn_length=[70, 70, 61, 80]
+        js_distances=[10, 20, 10, 26]
+        dis_h=50
+        for i in range(len(self.js_display)):
+            self.jp_button[i]=wx.Button(self.panel,
+                                        label='J'+str(i+1)+' +', 
+                                        pos=(js_pos[0],
+                                             js_pos[1]+(5-i)*dis_h),
+                                        size=(70,40))
+            dis_tmp=js_btn_length[0]+js_distances[0]
+                                        
+            self.jp_button[i].Bind(wx.EVT_LEFT_DOWN, 
+                                   lambda evt, mark=i+1 : self.teleop_joints(evt, mark) )
+            self.jp_button[i].Bind(wx.EVT_LEFT_UP,
+                                   lambda evt, mark=i+1 : self.release_button(evt, mark) )
+            
+            self.jm_button[i]=wx.Button(self.panel,
+                                        label='J'+str(i+1)+' -', 
+                                        pos=(js_pos[0]+dis_tmp,
+                                             js_pos[1]+(5-i)*dis_h),
+                                        size=(70,40))
+            dis_tmp+=js_btn_length[1]+js_distances[1]
+                                        
+            self.jm_button[i].Bind(wx.EVT_LEFT_DOWN, 
+                                   lambda evt, mark=-1*(i+1) : self.teleop_joints(evt, mark) )
+            self.jm_button[i].Bind(wx.EVT_LEFT_UP,
+                                   lambda evt, mark=-1*(i+1) : self.release_button(evt, mark) )
+            
+            pos_js_label=(js_pos[0]+dis_tmp, js_pos[1]+(5-i)*dis_h)
+            self.js_label[i]=wx.StaticText(self.panel,
+                                           label='J'+str(i+1)+'/deg:',
+                                           pos=pos_js_label)
+            self.js_label[i].SetPosition((int(pos_js_label[0]), int(pos_js_label[1]+abs(40-self.js_label[i].GetSize()[1])/2)))
+            dis_tmp+=js_btn_length[2]+js_distances[2]
 
+            pos_js_display=(js_pos[0]+dis_tmp, js_pos[1]+(5-i)*dis_h)
+            self.js_display[i]=wx.TextCtrl(self.panel, 
+                                           style=(wx.TE_CENTER |wx.TE_READONLY),
+                                           value=' 0000.00 ', 
+                                           pos=pos_js_display)
+            self.js_display[i].SetPosition((int(pos_js_display[0]), int(pos_js_display[1]+abs(40-self.js_display[i].GetSize()[1])/2)))
+            dis_tmp+=js_btn_length[3]+js_distances[3]
 
-class BrakePage(SubPage):
-    """Maintenance brake release; controller feedback is authoritative."""
+        ps_pos=[js_pos[0]+dis_tmp, 20]
+        ps_btn_length=[70, 70, 53, 80]
+        ps_distances=[10, 20, 10, 20]
+        pcs_btn_label=['X', 'Y', 'Z', 'Rx', 'Ry', 'Rz']
+        pcs_label=['X', 'Y', 'Z', 'R', 'P', 'Y']
+        unit_label=['/mm:', '/mm:', '/mm:', '/deg:', '/deg:', '/deg:']
+        for i in range(len(self.ps_display)):
+            self.pp_button[i]=wx.Button(self.panel,
+                                        label=pcs_btn_label[i]+' +', 
+                                        pos=(ps_pos[0],
+                                             ps_pos[1]+(5-i)*dis_h),
+                                        size=(70,40))
+            dis_tmp=ps_btn_length[0]+ps_distances[0]
+                                        
+            self.pp_button[i].Bind(wx.EVT_LEFT_DOWN, 
+                                   lambda evt, mark=i+1 : self.teleop_pcs(evt, mark) )
+            self.pp_button[i].Bind(wx.EVT_LEFT_UP,
+                                   lambda evt, mark=i+1 : self.release_button(evt, mark) )
+            
+            self.pm_button[i]=wx.Button(self.panel,
+                                        label=pcs_btn_label[i]+' -', 
+                                        pos=(ps_pos[0]+dis_tmp,
+                                             ps_pos[1]+(5-i)*dis_h),
+                                        size=(70,40))
+            dis_tmp+=ps_btn_length[1]+ps_distances[1]
+                                        
+            self.pm_button[i].Bind(wx.EVT_LEFT_DOWN, 
+                                   lambda evt, mark=-1*(i+1) : self.teleop_pcs(evt, mark) )
+            self.pm_button[i].Bind(wx.EVT_LEFT_UP,
+                                   lambda evt, mark=-1*(i+1) : self.release_button(evt, mark) )
+            
+            pos_ps_label=(ps_pos[0]+dis_tmp, ps_pos[1]+(5-i)*dis_h)
+            self.ps_label[i]=wx.StaticText(self.panel, 
+                                           label=pcs_label[i]+unit_label[i],
+                                           pos=pos_ps_label)
+            self.ps_label[i].SetPosition((int(pos_ps_label[0]), int(pos_ps_label[1]+abs(40-self.ps_label[i].GetSize()[1])/2)))
+            dis_tmp+=ps_btn_length[2]+ps_distances[2]
+            
+            pos_ps_display=(ps_pos[0]+dis_tmp, ps_pos[1]+(5-i)*dis_h)
+            self.ps_display[i]=wx.TextCtrl(self.panel, 
+                                           style=(wx.TE_CENTER |wx.TE_READONLY),
+                                           value='', 
+                                           pos=pos_ps_display)
+            self.ps_display[i].SetPosition((int(pos_ps_display[0]), int(pos_ps_display[1]+abs(40-self.ps_display[i].GetSize()[1])/2)))
+            dis_tmp+=ps_btn_length[3]+ps_distances[3]
 
-    AVAILABLE_MESSAGE = (
-        "Robot is Servo Off, stationary and fault-free. Hold an axis button to release "
-        "its brake; releasing the button requests CloseBrake.\n"
-        "⚠ Joints may drop under gravity after brake release. Please support the "
-        "manipulator manually!"
-    )
-    UNAVAILABLE_MESSAGE = "Requires Servo Off, stopped and fault-free."
+        # 20201209: add the DO,LED,DI,end button.
+        for i in range(len(self.DO_btn_display)):
+            self.DO_btn_display[i]=wx.Button(self.panel,label='DO'+str(i),
+                                        pos=(20+(self.DO_DI_btn_length[i]+self.btn_interstice)*i,
+                                        self.btn_height+40))
+            self.DO_btn_display[i].Bind(wx.EVT_BUTTON,
+                                    lambda evt,marker=i,cl=self.call_write_DO : 
+                                    self.call_write_DO_command(evt,marker,cl))
 
-    def __init__(self, parent, frame):
-        super().__init__(parent, frame, "Brake")
-        self.operation_allowed = False
-        self.released = [False] * 6
+            self.DI_display[i]=wx.TextCtrl(self.panel, style=(wx.TE_CENTER | wx.TE_READONLY), value='DI'+str(i),
+                                size=(self.DO_btn_display[i].GetSize()), 
+                                pos=(20+(self.DO_DI_btn_length[i]+self.btn_interstice)*i,self.btn_height+80))
 
-        self.message = wx.StaticText(
-            self,
-            label=self.AVAILABLE_MESSAGE,
-            size=(820, -1),
-            style=wx.ST_NO_AUTORESIZE,
+            self.LED_display[i]=wx.Button(self.panel,label='LED'+str(i),
+                                        pos=(20+(self.DO_DI_btn_length[i]+self.btn_interstice)*i,self.btn_height+120))
+            self.LED_display[i].Bind(wx.EVT_BUTTON,
+                                    lambda evt, marker=4+i, cl=self.call_write_DO : 
+                                    self.call_write_DO_command(evt, marker,cl))
+
+            png=wx.Image(self.btn_path+'/btn_icon/End_btn'+str(i)+'_low.png',wx.BITMAP_TYPE_PNG).ConvertToBitmap()
+            self.End_btn_display[i]=wx.StaticBitmap(self.panel,-1,png,
+                                                pos=(40+(self.DO_DI_btn_length[i]+self.btn_interstice)*i,
+                                                self.btn_height+160))
+
+    def velocity_setting_cb(self, event):
+        current_velocity_scaling=self.velocity_setting.GetValue()*0.01
+        msg = Float32()
+        msg.data = current_velocity_scaling
+        self.publisher_.publish(msg)
+        self.node.get_logger().info('new vel: %s' % str(current_velocity_scaling))
+        vel_new_param = rclpy.parameter.Parameter(
+            'velocity_scaling',
+            rclpy.Parameter.Type.DOUBLE,
+            current_velocity_scaling
         )
-        message_font = self.message.GetFont()
-        message_font.SetPointSize(11)
-        self.message.SetFont(message_font)
-        self.message.Wrap(820)
-        self.root.Add(self.message, 0, wx.ALIGN_CENTER | wx.TOP, 55)
-
-        axes = wx.BoxSizer(wx.VERTICAL)
-        self.axis_buttons = []
-        for row_index in range(2):
-            row = wx.BoxSizer(wx.HORIZONTAL)
-            for column in range(3):
-                index = row_index * 3 + column
-                button = BrakeAxisControl(
-                    self,
-                    index + 1,
-                    lambda release, axis=index: self.request_axis(axis, release),
-                )
-                self.axis_buttons.append(button)
-                row.Add(button, 0)
-                if column < 2:
-                    row.AddStretchSpacer()
-            axes.Add(row, 0, wx.EXPAND)
-            if row_index == 0:
-                axes.AddSpacer(36)
-        axes.SetMinSize((820, -1))
-        self.root.Add(axes, 0, wx.ALIGN_CENTER | wx.TOP, 28)
-        self.update_conditions(False)
-
-    def update_conditions(self, operation_allowed):
-        self.operation_allowed = operation_allowed
-        self.message.SetLabel(
-            self.AVAILABLE_MESSAGE if operation_allowed else self.UNAVAILABLE_MESSAGE
-        )
-        self.message.Wrap(820)
-        for index, button in enumerate(self.axis_buttons):
-            button.set_state(self.released[index], operation_allowed)
-        self.Layout()
-
-    def update_brakes(self, released):
-        self.released = list(released[:6])
-        for index, button in enumerate(self.axis_buttons):
-            button.set_state(self.released[index], self.operation_allowed)
-
-    def request_axis(self, axis, release):
-        if release and not self.operation_allowed:
-            return
-        self.frame.request_brake(axis, release)
-
-
-class FormPage(SubPage):
-    def __init__(self, parent, frame, title, name, fields):
-        super().__init__(parent, frame, title)
-        self.controls = {}
-        form = wx.FlexGridSizer(len(fields) + 1, 3, 18, 18)
-        form.Add(wx.StaticText(self, label="Name"), 0, wx.ALIGN_CENTER_VERTICAL)
-        fixed_name = make_text(self, name, readonly=True, size=(250, 38))
-        form.Add(fixed_name, 0)
-        form.AddSpacer(1)
-        for key, unit in fields:
-            form.Add(wx.StaticText(self, label=key), 0, wx.ALIGN_CENTER_VERTICAL)
-            control = make_text(self, "0.000", size=(250, 38))
-            self.controls[key] = control
-            form.Add(control, 0)
-            form.Add(wx.StaticText(self, label=unit), 0, wx.ALIGN_CENTER_VERTICAL)
-        self.saved_values = {key: "0.000" for key in self.controls}
-        self.root.AddStretchSpacer()
-        self.root.Add(form, 0, wx.ALIGN_CENTER | wx.ALL, 30)
-        self.root.AddStretchSpacer()
-        self.save_button, self.cancel_button = self.add_actions(self.save, self.cancel)
-
-    def save(self, _event):
-        for key, control in self.controls.items():
-            try:
-                float(control.GetValue())
-            except ValueError:
-                wx.MessageBox(f"{key} must be a number.", "Invalid value", wx.OK | wx.ICON_WARNING)
-                control.SetFocus()
+        vel_new_parameters = [vel_new_param]
+        self.basic_api_reconfigure_cb(vel_new_parameters)
+        wx.CallAfter(self.update_velocity_scaling_show, current_velocity_scaling)
+    
+    def joint_state_cb(self, msg):
+        joint_name = msg.name
+        static_name = "elfin_joint"
+        for i in range(0,len(joint_name)):
+            current_joint_name = static_name + str(i+1)
+            for j in range(0, len(joint_name)):
+                if joint_name[j] == current_joint_name:
+                    self.current_joint_val[i] = msg.position[j]
+       
+    def basic_api_reconfigure_cb(self, params):
+        for param in params:
+            if self.velocity_setting_show.GetValue()!=param.value:
+                self.velocity_setting.SetValue(int(param.value*100))
+                self.node.get_logger().info('set new vel: %s' % str(param.value*100))
+                wx.CallAfter(self.update_velocity_scaling_show, param.value) 
+        return SetParametersResult(successful=True)     
+    
+    def action_stop(self):
+        self.call_teleop_stop_req.data=True
+        resp=self.call_teleop_stop.call_async(self.call_teleop_stop_req)
+    
+    def teleop_joints(self,event,mark):
+        try:
+            self.node_lock.acquire()
+            self.call_teleop_joint_req.data=mark
+            resp=self.call_teleop_joint.call_async(self.call_teleop_joint_req)
+            rclpy.spin_until_future_complete(self.node, resp)
+            wx.CallAfter(self.update_reply_show, resp.result())
+            event.Skip()
+            self.node_lock.release()
+        except Exception as e:
+            self.node.get_logger().info('teleop joints error')
+        
+    def teleop_pcs(self,event,mark):
+        try: 
+            self.node_lock.acquire()
+            self.call_teleop_cart_req.data=mark            
+            resp=self.call_teleop_cart.call_async(self.call_teleop_cart_req)
+            rclpy.spin_until_future_complete(self.node, resp)
+            wx.CallAfter(self.update_reply_show, resp.result())
+            event.Skip()
+            self.node_lock.release()
+        except Exception as e:
+            self.node.get_logger().info('eleop pcs error')
+    
+    def release_button(self, event, mark):
+        self.node_lock.acquire()
+        self.call_teleop_stop_req.data=True
+        resp=self.call_teleop_stop.call_async(self.call_teleop_stop_req)
+        rclpy.spin_until_future_complete(self.node, resp)
+        wx.CallAfter(self.update_reply_show, resp.result())
+        event.Skip()
+        self.node_lock.release()
+    
+    def call_set_bool_common(self, event, client, request):
+        btn=event.GetEventObject()
+        check_list=['Servo On', 'Servo Off', 'Clear Fault']
+        
+        # Check servo state
+        if btn.GetName()=='Servo On':
+            servo_enabled=bool()
+            if self.servo_state_lock.acquire():
+                servo_enabled=self.servo_state
+                self.servo_state_lock.release()
+            if servo_enabled:
+                resp=SetBool_Response()
+                resp.success=False
+                resp.message='Robot is already enabled'
+                wx.CallAfter(self.update_reply_show, resp)
+                event.Skip()
                 return
-        self.saved_values = {key: control.GetValue() for key, control in self.controls.items()}
-        self.frame.set_status(f"{self.__class__.__name__} settings saved locally")
-
-    def cancel(self, _event):
-        for key, value in self.saved_values.items():
-            self.controls[key].SetValue(value)
-        self.frame.set_status("Changes cancelled")
-
-
-class TcpPage(FormPage):
-    FIELD_ORDER = ("X", "Y", "Z", "RX", "RY", "RZ")
-
-    def __init__(self, parent, frame):
-        super().__init__(
-            parent,
-            frame,
-            "TCP",
-            "Current TCP",
-            (("X", "mm"), ("Y", "mm"), ("Z", "mm"),
-             ("RX", "°"), ("RY", "°"), ("RZ", "°")),
-        )
-        self.set_write_allowed(False)
-
-    def set_write_allowed(self, allowed):
-        for control in self.controls.values():
-            control.SetEditable(allowed)
-            control.SetBackgroundColour(WHITE if allowed else PALE_BLUE)
-        self.save_button.Enable(allowed)
-
-    def set_pose(self, pose):
-        for name, value in zip(self.FIELD_ORDER, pose):
-            self.controls[name].SetValue(f"{value:.3f}")
-        self.saved_values = {
-            name: self.controls[name].GetValue() for name in self.FIELD_ORDER
-        }
-
-    def save(self, _event):
+        
+        # Check fault state
+        if btn.GetName()=='Clear Fault':
+            fault_flag=bool()
+            if self.fault_state_lock.acquire():
+                fault_flag=self.fault_state
+                self.fault_state_lock.release()
+            if not fault_flag:
+                resp=SetBool_Response()
+                resp.success=False
+                resp.message='There is no fault now'
+                wx.CallAfter(self.update_reply_show, resp)
+                event.Skip()
+                return
+        
+        # Check if the button is in check list
+        if btn.GetName() in check_list:
+            self.show_message_dialog(btn.GetName(), client, request)
+        else:
+            try:
+                self.node_lock.acquire()
+                resp = client.call_async(request)
+                rclpy.spin_until_future_complete(self.node, resp)
+                wx.CallAfter(self.update_reply_show, resp.result())
+                self.node_lock.release()
+            except Exception as e:
+                resp=SetBool_Response()
+                resp.success=False
+                resp.message='Press button'
+                # 'no such service in simulation1'
+                wx.CallAfter(self.update_reply_show, resp)
+        event.Skip()
+    
+    def thread_bg(self, msg, client, request):
+        wx.CallAfter(self.show_dialog)
+        if msg=='Servo Off':
+            self.action_stop()
+        time.sleep(1.0)
         try:
-            pose = [float(self.controls[name].GetValue()) for name in self.FIELD_ORDER]
-        except ValueError:
-            wx.MessageBox("TCP values must be numbers.", "Invalid TCP", wx.OK | wx.ICON_WARNING)
-            return
-        self.frame.set_tcp(pose)
+            self.node_lock.acquire()
+            resp=client.call_async(request)
+            rclpy.spin_until_future_complete(self.node, resp)
+            wx.CallAfter(self.update_reply_show, resp.result())
+            self.node_lock.release()
+        except Exception as e:
+            resp=SetBool_Response()
+            resp.success=False
+            resp.message='Press Button'
+            # 'no such service in simulation2'
+            wx.CallAfter(self.update_reply_show, resp)
+        wx.CallAfter(self.destroy_dialog)
 
-    def cancel(self, _event):
-        self.frame.read_tcp()
+    # 20201201: add function for processing value to DO_btn
+    def process_DO_btn(self,value):
+        if self.DO_btn_lock.acquire():
+            for i in range(0,8):
+                tmp = (value >> (12 + i)) & 0x01
+                self.DO_btn[i]=tmp
+            self.DO_btn_lock.release()
 
-
-class PayloadPage(FormPage):
-    FIELD_ORDER = ("Payload", "CX", "CY", "CZ")
-
-    def __init__(self, parent, frame):
-        super().__init__(parent, frame, "Payload", "Current Payload",
-                         (("Payload", "kg"), ("CX", "mm"),
-                          ("CY", "mm"), ("CZ", "mm")))
-        self.max_payload = 0.0
-        self.set_write_allowed(False)
-
-    def set_write_allowed(self, allowed):
-        for control in self.controls.values():
-            control.SetEditable(allowed)
-            control.SetBackgroundColour(WHITE if allowed else PALE_BLUE)
-        self.save_button.Enable(allowed)
-
-    def set_payload(self, mass, cog, max_payload):
-        values = (mass, *cog)
-        for name, value in zip(self.FIELD_ORDER, values):
-            self.controls[name].SetValue(f"{value:.3f}")
-        self.max_payload = max_payload
-
-    def save(self, _event):
+    # 20201201: add function to read DO.
+    def call_read_DO_command(self):
         try:
-            values = [float(self.controls[name].GetValue()) for name in self.FIELD_ORDER]
-        except ValueError:
-            wx.MessageBox("Payload values must be numbers.", "Invalid Payload",
-                          wx.OK | wx.ICON_WARNING)
-            return
-        self.frame.set_payload(values[0], values[1:])
+            client = self.call_read_do
+            val = client.call_async(self.call_read_do_req)
+            rclpy.spin_until_future_complete(self.node, val,  executor=None, timeout_sec=0.05)
+            if val.done():
+                self.process_DO_btn(val.result().digital_input)
+        except Exception as e:
+            resp=ElfinIODRead_Response()
+            resp.digital_input=0x0000
 
-    def cancel(self, _event):
-        self.frame.read_payload()
+    # 20201201: add function for processing value
+    def process_DI_btn(self,value):
+        if self.DI_show_lock.acquire():
+            if value > 0:
+                for i in range(0,8):
+                    tmp = (value >> (i)) & 0x01
+                    self.DI_show[i]=tmp
+            else:
+                self.DI_show = [0,0,0,0,0,0,0,0]
+        self.DI_show_lock.release()
+    
+    # 20201201: add function to read DI.
+    def call_read_DI_command(self):
+        try:
+            client = self.call_read_di
+            val = client.call_async(self.call_read_di_req)
+            rclpy.spin_until_future_complete(self.node, val,  executor=None, timeout_sec=0.05)
+            if val.done():
+                self.process_DI_btn(val.result().digital_input)
+        except Exception as e:
+            resp=ElfinIODRead_Response()
+            resp.digital_input=0x0000
 
+    # 20201202: add function to read DO and DI.
+    def monitor_DO_DI(self):
+        self.node_lock.acquire()
+        self.call_read_DI_command()
+        self.call_read_DO_command()
+        self.node_lock.release()
 
-class ElfinGuiFrame(wx.Frame):
-    PAGE_ORDER = {
-        "main": 0,
-        "safety": 1,
-        "io": 2,
-        "payload": 3,
-        "tcp": 4,
-        "brake": 5,
-    }
+    # 20201126: add function to write DO.
+    def call_write_DO_command(self, event, marker, client):
+        self.justification_DO_btn(marker)
+        write_request = ElfinIODWrite_Request()
+        request = 0
+        try:
+            self.DO_btn_lock.acquire()
+            for i in range(0,8):
+                request = request + self.DO_btn[i]*pow(2,i)
+            write_request.digital_output = request <<12
+            resp=client.call_async(write_request)
+            self.DO_btn_lock.release()
+        except Exception as e:
+            self.DO_btn_lock.release()
+            resp=ElfinIODWrite_Response()
+            resp.success=False
+            self.justification_DO_btn(marker)
+            rp=SetBool_Response()
+            rp.success=False
+            rp.message='no such service for DO control'
+            wx.CallAfter(self.update_reply_show, rp)
 
-    def __init__(self):
-        style = (wx.DEFAULT_FRAME_STYLE | wx.RESIZE_BORDER | wx.MINIMIZE_BOX |
-                 wx.MAXIMIZE_BOX | wx.CLOSE_BOX)
-        super().__init__(None, title="Elfin Robot Control", size=(1182, 820), style=style)
-        self.SetMinSize((980, 720))
-        panel = wx.Panel(self)
-        root = wx.BoxSizer(wx.VERTICAL)
-        self.header = HeaderBar(panel)
-        root.Add(self.header, 0, wx.EXPAND)
+    # 20201127: add justification to DO_btn
+    def justification_DO_btn(self,marker):
+        self.DO_btn_lock.acquire()
+        if 0 == self.DO_btn[marker]:
+            self.DO_btn[marker] = 1
+        else:
+             self.DO_btn[marker] = 0
+        self.DO_btn_lock.release()
 
-        self.book = wx.Simplebook(panel)
-        self.main_page = MainPage(self.book, self)
-        self.brake_page = BrakePage(self.book, self)
-        self.tcp_page = TcpPage(self.book, self)
-        self.safety_page = SafetyPage(self.book, self)
-        self.payload_page = PayloadPage(self.book, self)
-        self.io_page = IoPage(self.book, self)
-        pages = (
-            self.main_page,
-            self.safety_page,
-            self.io_page,
-            self.payload_page,
-            self.tcp_page,
-            self.brake_page,
-        )
-        for page in pages:
-            self.book.AddPage(page, "")
-        root.Add(self.book, 1, wx.EXPAND)
-        panel.SetSizer(root)
+    # 20201201: add function to set DO_btn colour
+    def set_DO_btn_colour(self):
+        self.DO_btn_lock.acquire()
+        for i in range(0,4):
+            if 0 == self.DO_btn[i]:
+                self.DO_btn_display[i].SetBackgroundColour(wx.NullColour)
+            else:
+                self.DO_btn_display[i].SetBackgroundColour(wx.Colour(200,225,200))
+        self.DO_btn_lock.release()
 
-        self.robot_status_received = False
-        self.brake_status_received = False
-        self.servo_enabled = False
-        self.robot_moving = False
-        self.robot_faulted = False
-        self.sdk_connected = False
-        self.active_jog = None
-        self.jog_keepalive = None
-        self.jog_request_pending = False
-        self.jog_generation = 0
-        self.target_keepalive = None
-        self.target_request_pending = False
-        self.target_generation = 0
-        self.error_dialogs = set()
-        self.last_status_time = None
-        self.ros_bridge = GuiRosBridge(
-            self.on_robot_status,
-            self.on_brake_status,
-            self.on_realtime_state,
-            self.on_io_state,
-            self.on_end_io_state,
-        )
-        self.ros_executor = MultiThreadedExecutor(num_threads=2)
-        self.ros_executor.add_node(self.ros_bridge)
-        self.ros_thread = threading.Thread(target=self.ros_executor.spin, daemon=True)
-        self.ros_thread.start()
-        self.state_watchdog = wx.Timer(self)
-        self.Bind(wx.EVT_TIMER, self.check_state_freshness, self.state_watchdog)
-        self.state_watchdog.Start(250)
-        self.Bind(wx.EVT_CLOSE, self.on_close)
-        self.Centre()
+    # 20201201: add function to set DI_show colour
+    def set_DI_show_colour(self):
+        self.DI_show_lock.acquire()
+        for i in range(0,4):
+            if 0 == self.DI_show[i]:
+                self.DI_display[i].SetBackgroundColour(wx.NullColour)
+            else:
+                self.DI_display[i].SetBackgroundColour(wx.Colour(200,225,200))
+        self.DI_show_lock.release()
 
-    def set_status(self, message):
-        # Communication feedback will be designed separately.  The interface
-        # The operator panel intentionally has no bottom status text.
+    # 20201207: add function to set LED colour
+    def set_LED_show_colour(self):
+        self.DO_btn_lock.acquire()
+        for i in range(4,8):
+            if 0 == self.DO_btn[i]:
+                self.LED_display[i-4].SetBackgroundColour(wx.NullColour)
+            else:
+                self.LED_display[i-4].SetBackgroundColour(wx.Colour(200,225,200))
+        self.DO_btn_lock.release()
+
+    # 20201207: add function to set End_btn colour
+    def set_End_btn_colour(self):
+        self.DI_show_lock.acquire()
+        for i in range(4,8):
+            if 0 == self.DI_show[i]:
+                png=wx.Image(self.btn_path+'/btn_icon/End_btn'+str(i-4)+'_low.png',wx.BITMAP_TYPE_PNG)
+                self.End_btn_display[i-4].SetBitmap(wx.Bitmap(png))
+            else:
+                png=wx.Image(self.btn_path+'/btn_icon/End_btn'+str(i-4)+'_high.png',wx.BITMAP_TYPE_PNG)
+                self.End_btn_display[i-4].SetBitmap(wx.Bitmap(png))
+        self.DI_show_lock.release()
+
+    def set_color(self):
+        wx.CallAfter(self.set_DO_btn_colour)
+        wx.CallAfter(self.set_DI_show_colour)
+        wx.CallAfter(self.set_LED_show_colour)
+        wx.CallAfter(self.set_End_btn_colour)
+    
+    def show_message_dialog(self, message, cl, rq):
+        msg='executing ['+message+']'
+        self.dlg_label.SetLabel(msg)
+        lable_size=[]
+        lable_size.append(self.dlg_label.GetSize()[0])
+        lable_size.append(self.dlg_label.GetSize()[1])
+        self.dlg.SetSize((lable_size[0]+30, lable_size[1]+30))
+        t=threading.Thread(target=self.thread_bg, args=(message, cl, rq,))
+        t.start()
+        
+    def show_dialog(self):
+        self.dlg.SetPosition((self.GetPosition()[0]+250,
+                              self.GetPosition()[1]+250))
+        self.dlg.ShowModal()
+        
+    def destroy_dialog(self):
+        self.dlg.EndModal(0)
+        
+    def closewindow(self,event):
         pass
-
-    def show_page(self, name):
-        if name == "brake":
-            self.update_brake_availability()
-        elif name == "tcp":
-            self.read_tcp()
-        elif name == "safety":
-            self.read_safety()
-        elif name == "payload":
-            self.read_payload()
-        self.book.SetSelection(self.PAGE_ORDER[name])
-
-    def brake_operation_allowed(self):
-        return (
-            self.robot_status_received
-            and self.brake_status_received
-            and self.sdk_connected
-            and not self.servo_enabled
-            and not self.robot_moving
-            and not self.robot_faulted
-        )
-
-    def update_brake_availability(self):
-        self.brake_page.update_conditions(self.brake_operation_allowed())
-
-    def on_robot_status(self, message):
-        self.robot_status_received = True
-        self.last_status_time = time.monotonic()
-        self.sdk_connected = message.sdk_connected
-        self.servo_enabled = message.enabled
-        self.robot_moving = message.moving
-        self.robot_faulted = message.error
-        self.header.set_servo(message.enabled)
-        self.header.set_fault(message.error)
-        self.header.set_sdk_connected(message.sdk_connected)
-        if message.emergency_stop or message.safeguard_stop:
-            self.header.show_stop_result("E-STOP ACTIVE")
-        elif self.header.stop.GetLabel() == "E-STOP ACTIVE":
-            self.header.show_stop_result("STOP")
-        self.main_page.update_robot_status(message)
-        self.tcp_page.set_write_allowed(
-            message.sdk_connected and not message.enabled and not message.moving
-        )
-        write_allowed = message.sdk_connected and not message.enabled and not message.moving
-        self.safety_page.set_write_allowed(write_allowed)
-        self.payload_page.set_write_allowed(write_allowed)
-        self.update_brake_availability()
-
-    def check_state_freshness(self, _event):
-        if self.last_status_time is None or time.monotonic() - self.last_status_time <= 1.0:
-            return
-        self.last_status_time = None
-        self.robot_status_received = False
-        self.sdk_connected = False
-        self.header.set_sdk_connected(False)
-        self.cancel_motion_keepalives()
-        self.tcp_page.set_write_allowed(False)
-        self.safety_page.set_write_allowed(False)
-        self.payload_page.set_write_allowed(False)
-        self.update_brake_availability()
-
-    def cancel_motion_keepalives(self):
-        self.active_jog = None
-        self.active_target = None
-        self.jog_generation += 1
-        self.target_generation += 1
-        self.jog_request_pending = False
-        self.target_request_pending = False
-        for timer in (self.jog_keepalive, self.target_keepalive):
-            if timer is not None and timer.IsRunning():
-                timer.Stop()
-
-    def on_brake_status(self, message):
-        self.brake_status_received = True
-        self.brake_page.update_brakes(message.released)
-        self.update_brake_availability()
-
-    def on_realtime_state(self, message):
-        self.main_page.update_realtime(message)
-
-    def on_io_state(self, message):
-        self.io_page.update_channels("DI", message.digital_inputs)
-        self.io_page.update_channels("DO", message.digital_outputs)
-        self.io_page.update_channels("CI", message.configurable_inputs)
-        self.io_page.update_channels("CO", message.configurable_outputs)
-
-    def on_end_io_state(self, message):
-        self.io_page.update_channels("EndDI", message.digital_inputs)
-        self.io_page.update_channels("EndDO", message.digital_outputs)
-
-    def show_service_error(self, operation, detail):
-        dialog = wx.MessageDialog(
-            self,
-            f"{operation} failed:\n{detail}",
-            "Controller command rejected",
-            wx.OK | wx.ICON_ERROR,
-        )
-        self.error_dialogs.add(dialog)
-
-        def close_dialog(event):
-            self.error_dialogs.discard(dialog)
-            dialog.Destroy()
-            event.Skip(False)
-
-        dialog.Bind(wx.EVT_BUTTON, close_dialog, id=wx.ID_OK)
-        dialog.Bind(wx.EVT_CLOSE, close_dialog)
-        dialog.Show()
-
-    def command_result(self, operation, success, detail, _response=None):
-        if not success:
-            self.show_service_error(operation, detail)
-
-    def request_brake(self, axis, release):
-        # Opening is safety-gated. A release event must still attempt CloseBrake
-        # even if status changes while the operator is holding the button.
-        if release and not self.brake_operation_allowed():
-            self.update_brake_availability()
-            return
-        self.ros_bridge.set_brake(
-            axis,
-            release,
-            lambda success, detail: self.on_brake_response(axis, release, success, detail),
-        )
-
-    def on_brake_response(self, axis, release, success, detail):
-        if success:
-            return  # Wait for /elfin_sdk/brake_state; do not fake feedback.
-        operation = "OpenBrake" if release else "CloseBrake"
-        self.show_service_error(f"Axis{axis + 1} {operation}", detail)
-
-    def set_servo(self, enabled):
-        self.ros_bridge.set_enabled(
-            enabled,
-            lambda success, detail, response: self.command_result(
-                "Servo On" if enabled else "Servo Off", success, detail, response
-            ),
-        )
-
-    def clear_fault(self):
-        self.ros_bridge.reset(
-            lambda success, detail, response: self.command_result(
-                "Clear Fault", success, detail, response
-            )
-        )
-
-    def emergency_stop(self):
-        self.cancel_motion_keepalives()
-        self.header.show_stop_result("STOPPING...")
-        self.ros_bridge.stop(
-            self.on_stop_result
-        )
-
-    def on_stop_result(self, success, detail, _response):
-        label = "E-STOP ACTIVE" if success else "STOP FAILED"
-        self.header.show_stop_result(label)
-        if not success:
-            wx.CallLater(1200, self.header.show_stop_result, "STOP")
-        if not success:
-            self.show_service_error("Stop", detail)
-
-    def set_freedrive(self, enabled):
-        self.main_page.set_freedrive_pending(enabled)
-        self.ros_bridge.set_freedrive(
-            enabled,
-            lambda success, detail, response: self.on_freedrive_result(
-                enabled, success, detail, response
-            ),
-        )
-
-    def on_freedrive_result(self, enabled, success, detail, _response):
-        if not success:
-            self.main_page.set_freedrive_failure(detail)
-            self.show_service_error(
-                "Enter Free Drive" if enabled else "Exit Free Drive", detail
-            )
-            return
-        # Do not fake the final state. robot_status will set the colour and label.
-        self.main_page.free_drive.SetLabel("Waiting for feedback...")
-
-    def set_ros_control(self, enabled):
-        self.ros_bridge.set_ros_control(
-            enabled,
-            lambda success, detail, response: self.command_result(
-                "Activate ROS Control" if enabled else "Deactivate ROS Control",
-                success,
-                detail,
-                response,
-            ),
-        )
-
-    def set_speed(self, ratio):
-        self.ros_bridge.set_speed(
-            ratio,
-            lambda success, detail, response: self.command_result(
-                "Velocity Scaling", success, detail, response
-            ),
-        )
-
-    def read_tcp(self):
-        self.ros_bridge.get_tcp(self.on_tcp_read)
-
-    def on_tcp_read(self, success, detail, response):
-        if not success:
-            self.show_service_error("Get TCP", detail)
-            return
-        self.tcp_page.set_pose(response.pose)
-
-    def set_tcp(self, pose):
-        if not (
-            self.robot_status_received
-            and self.sdk_connected
-            and not self.servo_enabled
-            and not self.robot_moving
-        ):
-            self.show_service_error("Set TCP", "Servo Off and a stationary robot are required")
-            return
-        self.ros_bridge.set_tcp(pose, self.on_tcp_written)
-
-    def on_tcp_written(self, success, detail, _response):
-        if not success:
-            self.show_service_error("Set TCP", detail)
-            return
-        self.read_tcp()
-
-    def read_safety(self):
-        self.ros_bridge.get_safety(self.on_safety_read)
-
-    def on_safety_read(self, success, detail, response):
-        if success:
-            self.safety_page.set_level(response.data)
+    
+    def show_set_links_dialog(self, evt):
+        self.sld_ref_link_show.SetValue(self.ref_link_name)
+        self.sld_end_link_show.SetValue(self.end_link_name)
+        self.set_links_dlg.SetPosition((self.GetPosition()[0]+150,
+                                        self.GetPosition()[1]+250))
+        self.set_links_dlg.ShowModal()
+    
+    def update_ref_link(self, evt):
+        request=SetString_Request()
+        request.data=self.sld_ref_link_show.GetValue()
+        resp=self.call_set_ref_link.call_async(request)
+        rclpy.spin_until_future_complete(self.node, resp)
+        wx.CallAfter(self.update_reply_show, resp.result())
+    
+    def update_end_link(self, evt):
+        request=SetString_Request()
+        request.data=self.sld_end_link_show.GetValue()
+        resp=self.call_set_end_link.call_async(request)
+        rclpy.spin_until_future_complete(self.node, resp)
+        wx.CallAfter(self.update_reply_show, resp.result())
+    
+    def updateDisplay(self, msg):      
+        for i in range(len(self.js_display)):
+            self.js_display[i].SetValue(msg[i])
+        for i in range(len(self.ps_display)):
+            self.ps_display[i].SetValue(msg[i+6])
+            
+        if self.ref_link_lock.acquire():
+            ref_link=self.ref_link_name
+            self.ref_link_lock.release()
+        
+        if self.end_link_lock.acquire():
+            end_link=self.end_link_name
+            self.end_link_lock.release()
+        
+        self.ref_link_show.SetValue(ref_link)
+        self.end_link_show.SetValue(end_link)
+    
+    def update_reply_show(self,msg):
+        if msg.success:
+            self.reply_show.SetBackgroundColour(wx.Colour(200, 225, 200))
+            self.reply_show.SetValue(msg.message)
         else:
-            self.show_service_error("Get Safety Level", detail)
-
-    def set_safety(self, level):
-        self.ros_bridge.set_safety(level, self.on_safety_written)
-
-    def on_safety_written(self, success, detail, _response):
-        if not success:
-            self.show_service_error("Set Safety Level", detail)
-            return
-        self.read_safety()
-
-    def read_payload(self):
-        self.ros_bridge.get_payload(self.on_payload_read)
-
-    def on_payload_read(self, success, detail, response):
-        if success:
-            self.payload_page.set_payload(
-                response.mass, response.center_of_gravity, response.max_payload
-            )
+            self.reply_show.SetBackgroundColour(wx.Colour(225, 200, 200))
+            self.reply_show.SetValue(msg.message)# msg.message
+            
+    def update_servo_state(self, msg):
+        if msg.data:
+            self.servo_state_show.SetBackgroundColour(wx.Colour(200, 225, 200))
+            self.servo_state_show.SetValue('Enabled')
         else:
-            self.show_service_error("Get Payload", detail)
-
-    def set_payload(self, mass, cog):
-        self.ros_bridge.set_payload(mass, cog, self.on_payload_written)
-
-    def on_payload_written(self, success, detail, _response):
-        if not success:
-            self.show_service_error("Set Payload", detail)
-            return
-        self.read_payload()
-
-    def start_jog(self, mode, axis, direction):
-        self.stop_target()
-        self.stop_jog()
-        direction_value = (
-            Jog.Request.DIRECTION_NEGATIVE
-            if direction < 0
-            else Jog.Request.DIRECTION_POSITIVE
-        )
-        self.jog_generation += 1
-        generation = self.jog_generation
-        self.jog_start_deadline = time.monotonic() + 5.0
-        self.active_jog = (mode, axis, direction_value)
-        self.jog_request_pending = True
-        self.ros_bridge.jog(mode, axis, direction_value, Jog.Request.ACTION_START,
-                            lambda success, detail, response: self.on_jog_start(
-                                generation, success, detail, response
-                            ))
-
-    def on_jog_start(self, generation, success, detail, _response):
-        if generation != self.jog_generation:
-            return
-        self.jog_request_pending = False
-        if not success:
-            if (
-                self.is_transient_motion_state(detail)
-                and wx.GetMouseState().LeftIsDown()
-                and time.monotonic() < self.jog_start_deadline
-            ):
-                wx.CallLater(250, self.retry_jog_start, generation)
-                return
-            self.stop_jog()
-            self.show_service_error("Jog", detail)
+            self.servo_state_show.SetBackgroundColour(wx.Colour(225, 200, 200))
+            self.servo_state_show.SetValue('Disabled')
+    
+    def update_fault_state(self, msg):
+        if msg.data:
+            self.fault_state_show.SetBackgroundColour(wx.Colour(225, 200, 200))
+            self.fault_state_show.SetValue('Warning')
         else:
-            self.schedule_jog_keepalive()
-
-    def retry_jog_start(self, generation):
-        if generation != self.jog_generation or self.active_jog is None:
-            return
-        if not wx.GetMouseState().LeftIsDown():
-            self.stop_jog()
-            return
-        mode, axis, direction = self.active_jog
-        self.jog_request_pending = True
-        self.ros_bridge.jog(
-            mode,
-            axis,
-            direction,
-            Jog.Request.ACTION_START,
-            lambda success, detail, response: self.on_jog_start(
-                generation, success, detail, response
-            ),
-        )
-
-    def schedule_jog_keepalive(self):
-        if self.active_jog is not None:
-            self.jog_keepalive = wx.CallLater(200, self.send_jog_keepalive)
-
-    def send_jog_keepalive(self):
-        if self.active_jog is None:
-            return
-        if not wx.GetMouseState().LeftIsDown():
-            self.stop_jog()
-            return
-        if self.jog_request_pending:
-            self.schedule_jog_keepalive()
-            return
-        mode, axis, direction = self.active_jog
-        generation = self.jog_generation
-        self.jog_request_pending = True
-        self.ros_bridge.jog(mode, axis, direction, Jog.Request.ACTION_KEEPALIVE,
-                            lambda success, detail, response: self.on_jog_keepalive(
-                                generation, success, detail, response
-                            ))
-        self.schedule_jog_keepalive()
-
-    def on_jog_keepalive(self, generation, success, detail, _response):
-        if generation != self.jog_generation:
-            return
-        self.jog_request_pending = False
-        if not success:
-            self.stop_jog()
-            self.show_service_error("Jog", detail)
-
-    def stop_jog(self):
-        if self.active_jog is None:
-            return
-        mode, axis, direction = self.active_jog
-        self.active_jog = None
-        self.jog_generation += 1
-        self.jog_request_pending = False
-        if self.jog_keepalive is not None and self.jog_keepalive.IsRunning():
-            self.jog_keepalive.Stop()
-        self.ros_bridge.jog(mode, axis, direction, Jog.Request.ACTION_STOP,
-                            lambda _success, _detail, _response: None)
-
-    def start_hold_target(self, mode):
-        self.stop_jog()
-        self.stop_target()
+            self.fault_state_show.SetBackgroundColour(wx.Colour(200, 225, 200))
+            self.fault_state_show.SetValue('No Fault')
+        
+    def update_velocity_scaling_show(self, msg):
+        self.velocity_setting_show.SetValue(str(round(msg, 2)*100)+'%') # 20201127: change the show format
+    
+    
+    def js_call_back(self, data):
+        while not rclpy.is_shutdown():
+            try:
+                self.listener.waitForTransform(self.group.get_planning_frame(),
+                                               self.group.get_end_effector_link(),
+                                               rclpy.Time(0), rclpy.Duration(100))
+                (xyz,qua) = self.listener.lookupTransform(self.group.get_planning_frame(), 
+                                                        self.group.get_end_effector_link(), 
+                                                        rclpy.Time(0))
+                break
+            except (LookupException, ConnectivityException, ExtrapolationException):
+            
+                continue
+        rpy=tf2_ros.transformations.euler_from_quaternion(qua)
+        
+        for i in range(len(data.position)):
+            self.key.append(str(round(data.position[i]*180/math.pi, 2)))
+            
+        self.key.append(str(round(xyz[0]*1000, 2)))
+        self.key.append(str(round(xyz[1]*1000, 2)))
+        self.key.append(str(round(xyz[2]*1000, 2)))
+        
+        self.key.append(str(round(rpy[0]*180/math.pi, 2)))
+        self.key.append(str(round(rpy[1]*180/math.pi, 2)))
+        self.key.append(str(round(rpy[2]*180/math.pi, 2)))
+        
+        wx.CallAfter(self.updateDisplay, self.key)
+        self.key=[]
+    
+    def monitor_status(self):
+        self.key=[]
+        t = geometry_msgs.msg.TransformStamped()
+        current_joint_values=self.current_joint_val
+        for i in range(len(current_joint_values)):
+            self.key.append(str(round(current_joint_values[i]*180/math.pi, 2)))
+        
+        if self.ref_link_lock.acquire():
+            ref_link=self.ref_link_name
+            self.ref_link_lock.release()
+        
+        if self.end_link_lock.acquire():
+            end_link=self.end_link_name
+            self.end_link_lock.release()
         try:
-            target = self.main_page.target_values(mode)
-        except ValueError:
-            self.show_service_error("Move Target", "All six target values must be numbers")
-            return
-        self.start_target_request(mode, target)
+            t = self.tfBuffer.lookup_transform(ref_link, end_link, rclpy.time.Time())
 
-    def start_target_request(self, mode, target):
-        self.target_generation += 1
-        generation = self.target_generation
-        self.target_start_deadline = time.monotonic() + 5.0
-        self.active_target = (mode, target)
-        self.target_request_pending = True
-        if mode == MoveTarget.Request.MODE_ALIGN_Z:
-            self.main_page.set_alignment_state("Aligning Z...", True)
-        self.ros_bridge.move_target(mode, target, MoveTarget.Request.ACTION_START, True,
-                                    lambda success, detail, response: self.on_target_start(
-                                        generation, success, detail, response
-                                    ))
+            x = t.transform.translation.x
+            y = t.transform.translation.y
+            z = t.transform.translation.z
+            xyz = [x,y,z]
+            
+            eff_rpy = transforms3d.euler.quat2euler([t.transform.rotation.w,t.transform.rotation.x
+                                ,t.transform.rotation.y,t.transform.rotation.z],"sxyz")
+            rpy = [eff_rpy[0],eff_rpy[1],eff_rpy[2]]
+            self.key.append(str(round(xyz[0]*1000, 2)))
+            self.key.append(str(round(xyz[1]*1000, 2)))
+            self.key.append(str(round(xyz[2]*1000, 2)))
+            
+            self.key.append(str(round(rpy[0]*180/math.pi, 2)))
+            self.key.append(str(round(rpy[1]*180/math.pi, 2)))
+            self.key.append(str(round(rpy[2]*180/math.pi, 2)))
+            wx.CallAfter(self.updateDisplay, self.key)
+        except Exception as e:
+            self.node.get_logger().info('Get TF2 State Error...')
+            
+    def servo_state_cb(self, data):
+        if self.servo_state_lock.acquire():
+            self.servo_state=data.data
+            self.servo_state_lock.release()
+        wx.CallAfter(self.update_servo_state, data)
+    
+    def fault_state_cb(self, data):
+        if self.fault_state_lock.acquire():
+            self.fault_state=data.data
+            self.fault_state_lock.release()
+        wx.CallAfter(self.update_fault_state, data)
+    
+    def ref_link_name_cb(self, data):
+        if self.ref_link_lock.acquire():
+            self.ref_link_name=data.data
+            self.ref_link_lock.release()
+    
+    def end_link_name_cb(self, data):
+        if self.end_link_lock.acquire():
+            self.end_link_name=data.data
+            self.end_link_lock.release()
+        
+    def listen(self):
+        self.gui_node.create_subscription(Bool, '/enable_state', self.servo_state_cb, 10)
+        self.gui_node.create_subscription(Bool, '/fault_state', self.fault_state_cb, 10)
+        self.gui_node.create_subscription(String, '/reference_link_name', self.ref_link_name_cb, 10)
+        self.gui_node.create_subscription(String, '/end_link_name', self.end_link_name_cb, 10)
+        self.gui_node.create_subscription(JointState, '/joint_states', self.joint_state_cb, 10)
 
-    def on_target_start(self, generation, success, detail, _response):
-        if generation != self.target_generation:
-            return
-        self.target_request_pending = False
-        if not success:
-            if (
-                self.is_transient_motion_state(detail)
-                and wx.GetMouseState().LeftIsDown()
-                and time.monotonic() < self.target_start_deadline
-            ):
-                wx.CallLater(250, self.retry_target_start, generation)
-                return
-            self.stop_target()
-            self.main_page.set_alignment_state("Z Align Failed")
-            self.show_service_error("SDK Motion", detail)
-        elif self.active_target is not None and (
-            self.active_target[0] == MoveTarget.Request.MODE_ALIGN_Z
-            and "already aligned" in detail.lower()
-        ):
-            self.stop_target()
-            self.main_page.set_alignment_state("Z Already Aligned")
-            wx.CallLater(
-                1500, self.main_page.set_alignment_state, "Z-axis Alignment"
-            )
+        self.gui_node.create_timer(0.2, self.monitor_status)
+        self.gui_node.create_timer(0.2, self.set_color)
+        if not self.use_fake_robot:
+            self.gui_node.create_timer(0.2, self.monitor_DO_DI)
         else:
-            self.schedule_target_keepalive()
-
-    @staticmethod
-    def is_transient_motion_state(detail):
-        """States seen briefly while the controller exits the previous hold mode."""
-        return any(
-            state in detail
-            for state in (
-                "RobotInLongJogMoving",
-                "RobotInMoving",
-                "RobotStopping",
-            )
-        )
-
-    def retry_target_start(self, generation):
-        if generation != self.target_generation or self.active_target is None:
-            return
-        if not wx.GetMouseState().LeftIsDown():
-            self.stop_target()
-            return
-        mode, target = self.active_target
-        self.target_request_pending = True
-        self.ros_bridge.move_target(
-            mode,
-            target,
-            MoveTarget.Request.ACTION_START,
-            True,
-            lambda success, detail, response: self.on_target_start(
-                generation, success, detail, response
-            ),
-        )
-
-    def schedule_target_keepalive(self):
-        if getattr(self, "active_target", None) is not None:
-            self.target_keepalive = wx.CallLater(200, self.send_target_keepalive)
-
-    def send_target_keepalive(self):
-        if getattr(self, "active_target", None) is None:
-            return
-        if not wx.GetMouseState().LeftIsDown():
-            self.stop_target()
-            return
-        if self.target_request_pending:
-            self.schedule_target_keepalive()
-            return
-        mode, target = self.active_target
-        generation = self.target_generation
-        self.target_request_pending = True
-        self.ros_bridge.move_target(mode, target, MoveTarget.Request.ACTION_KEEPALIVE, True,
-                                    lambda success, detail, response: self.on_target_keepalive(
-                                        generation, success, detail, response
-                                    ))
-        self.schedule_target_keepalive()
-
-    def on_target_keepalive(self, generation, success, detail, _response):
-        if generation != self.target_generation:
-            return
-        self.target_request_pending = False
-        if not success:
-            self.stop_target()
-            self.main_page.set_alignment_state("Z Align Failed")
-            self.show_service_error("SDK Motion", detail)
-
-    def stop_target(self):
-        if getattr(self, "active_target", None) is None:
-            return
-        mode, target = self.active_target
-        self.active_target = None
-        self.target_generation += 1
-        self.target_request_pending = False
-        if self.target_keepalive is not None and self.target_keepalive.IsRunning():
-            self.target_keepalive.Stop()
-        self.ros_bridge.move_target(mode, target, MoveTarget.Request.ACTION_STOP, True,
-                                    lambda _success, _detail, _response: None)
-        if mode == MoveTarget.Request.MODE_ALIGN_Z:
-            self.main_page.set_alignment_state("Z Stopped")
-            wx.CallLater(
-                1000, self.main_page.set_alignment_state, "Z-axis Alignment"
-            )
-
-    def start_special_target(self, mode):
-        self.stop_jog()
-        self.stop_target()
-        target = [0.0] * 6
-        self.start_target_request(mode, target)
-
-    def on_close(self, event):
-        self.Hide()
-        self.stop_jog()
-        self.stop_target()
-        self.state_watchdog.Stop()
-        self.ros_executor.shutdown(timeout_sec=1.0)
-        self.ros_bridge.destroy_node()
-        self.Destroy()
-
-
-class ElfinGuiApp(wx.App):
-    def OnInit(self):
-        frame = ElfinGuiFrame()
-        frame.Show()
-        self.SetTopWindow(frame)
-        return True
-
-
-if __name__ == "__main__":
-    rclpy.init()
-    try:
-        app = ElfinGuiApp(False)
-        app.MainLoop()
-    finally:
-        if rclpy.ok():
-            rclpy.shutdown()
+            pass
+       
+        self.elfin_gui_executor = MultiThreadedExecutor()
+        self.elfin_gui_executor.add_node(self.gui_node)
+        self.elfin_gui_executor.add_node(self.node)
+        spin_thread = threading.Thread(target=self.elfin_gui_executor.spin)
+        spin_thread.setDaemon(True)
+        spin_thread.start()
+  
+if __name__=='__main__':  
+    app=wx.App(False)  
+    myframe=MyFrame(parent=None,id=-1) 
+    myframe.Show(True)
+    myframe.listen()
+    app.MainLoop()
