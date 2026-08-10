@@ -39,5 +39,9 @@ def generate_launch_description():
             executable="elfin_gui_new.py",
             name="elfin_gui",
             output="screen",
+            parameters=[{
+                "robot_model": LaunchConfiguration("robot_model"),
+                "robot_ip": LaunchConfiguration("robot_ip"),
+            }],
         ),
     ])

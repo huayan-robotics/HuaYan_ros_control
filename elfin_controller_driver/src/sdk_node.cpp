@@ -339,6 +339,8 @@ public:
       1000ms, std::bind(&ElfinSdkNode::try_startup_ros_control, this), client_group_);
     motion_watchdog_timer_ = create_wall_timer(
       50ms, std::bind(&ElfinSdkNode::check_motion_watchdog, this), service_group_);
+    sdk_health_timer_ = create_wall_timer(
+      500ms, std::bind(&ElfinSdkNode::maintain_sdk_connection, this), service_group_);
   }
 
   ~ElfinSdkNode() override
@@ -360,6 +362,31 @@ public:
     state_running_ = true;
     state_thread_ = std::thread(&ElfinSdkNode::state_loop, this);
     return true;
+  }
+
+  void maintain_sdk_connection()
+  {
+    if (HRIF_IsConnected(box_id_)) {
+      sdk_connected_ = true;
+      return;
+    }
+    const bool was_connected = sdk_connected_.exchange(false);
+    if (was_connected) {
+      RCLCPP_WARN(get_logger(), "SDK 10003 session was lost; reconnecting to %s:%d",
+        robot_ip_.c_str(), sdk_port_);
+    }
+    HRIF_DisConnect(box_id_);
+    const int code = HRIF_Connect(
+      box_id_, robot_ip_.c_str(), static_cast<unsigned short>(sdk_port_));
+    if (code == 0) {
+      sdk_connected_ = true;
+      RCLCPP_INFO(get_logger(), "SDK 10003 session reconnected to %s:%d",
+        robot_ip_.c_str(), sdk_port_);
+    } else {
+      RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000,
+        "SDK reconnect to %s:%d failed with code %d",
+        robot_ip_.c_str(), sdk_port_, code);
+    }
   }
 
 private:
@@ -461,7 +488,11 @@ private:
       const int align_code = HRIF_MoveAlignToZ(
         box_id_, robot_id_, "TCP", "Base", reached, target[0], target[1], target[2],
         target[3], target[4], target[5]);
-      if (align_code != 0) {set_response(align_code, response); return;}
+      if (align_code != 0) {
+        RCLCPP_ERROR(get_logger(), "HRIF_MoveAlignToZ failed: %s",
+          sdk_result(align_code).c_str());
+        set_response(align_code, response); return;
+      }
       if (reached) {
         response->success = true; response->message = "TCP Z-axis is already aligned"; return;
       }
@@ -491,16 +522,32 @@ private:
       joint ? t[4] : reference_joints[4], joint ? t[5] : reference_joints[5],
       "TCP", "Base", request->velocity, request->acceleration, request->blend_radius,
       joint ? 1 : 0, 0, 0, 0, align_z ? "ros_gui_align_z" : "ros_gui_target");
-    if (code == 0 && request->hold_required) {
-      sdk_motion_active_ = true; sdk_motion_kind_ = 2; move_hold_required_ = true;
-      motion_deadline_ = std::chrono::steady_clock::now() + 500ms;
+    if (code != 0) {
+      RCLCPP_ERROR(get_logger(), "%s failed: %s",
+        align_z ? "Z alignment HRIF_WayPoint" : "HRIF_WayPoint",
+        sdk_result(code).c_str());
+    } else if (align_z) {
+      RCLCPP_INFO(get_logger(), "Z alignment target accepted by HRIF_WayPoint");
+    }
+    if (code == 0) {
+      // Autonomous targets (currently Z alignment) must remain tracked so a
+      // later STOP/cancel can stop them, but only hold-to-run targets are
+      // governed by the GUI keepalive watchdog.
+      sdk_motion_active_ = true; sdk_motion_kind_ = 2;
+      move_hold_required_ = request->hold_required;
+      target_motion_seen_ = false;
+      if (move_hold_required_) {
+        motion_deadline_ = std::chrono::steady_clock::now() + 500ms;
+      }
     }
     set_response(code, response);
   }
   void check_motion_watchdog()
   {
     std::lock_guard<std::mutex> lock(sdk_motion_mutex_);
-    if (sdk_motion_active_ && std::chrono::steady_clock::now() > motion_deadline_) {
+    if (sdk_motion_active_ && move_hold_required_ &&
+      std::chrono::steady_clock::now() > motion_deadline_)
+    {
       stop_sdk_motion_locked();
       RCLCPP_ERROR(get_logger(), "SDK GUI motion watchdog expired; robot stop requested");
     }
@@ -526,6 +573,7 @@ private:
     sdk_motion_active_ = false;
     sdk_motion_kind_ = 0;
     move_hold_required_ = false;
+    target_motion_seen_ = false;
     if (jog_code != 0) {return jog_code;}
     if (stop_code != 0) {return stop_code;}
     return standby_code;
@@ -616,6 +664,20 @@ private:
     robot_paused_ = info.paused != 0;
     robot_braking_ = braking;
     state_received_ = true;
+    {
+      std::lock_guard<std::mutex> motion_lock(sdk_motion_mutex_);
+      if (sdk_motion_active_ && sdk_motion_kind_ == 2) {
+        if (info.moving != 0) {
+          target_motion_seen_ = true;
+        } else if (target_motion_seen_ && info.in_position != 0 && info.blending_done != 0) {
+          sdk_motion_active_ = false;
+          sdk_motion_kind_ = 0;
+          move_hold_required_ = false;
+          target_motion_seen_ = false;
+          RCLCPP_INFO(get_logger(), "SDK target motion reached the commanded position");
+        }
+      }
+    }
     {
       std::lock_guard<std::mutex> lock(mode_mutex_);
       freedrive_ = info.freedrive_mode != 0;
@@ -764,7 +826,11 @@ private:
   {
     if (code == 0) {return "success";}
     std::string text;
-    if (HRIF_IsConnected(box_id_)) {HRIF_GetErrorCodeStr(box_id_, code, text);}
+    if (HRIF_IsConnected(box_id_)) {
+      HRIF_GetErrorCodeStr(box_id_, code, text);
+    } else {
+      sdk_connected_ = false;
+    }
     return "SDK error " + std::to_string(code) + (text.empty() ? "" : ": " + text);
   }
   bool switch_motion_controller(bool start)
@@ -827,9 +893,10 @@ private:
   std::atomic<bool> ros_control_active_{false};
   std::atomic<bool> startup_state_decided_{false};
   std::atomic<bool> startup_activation_pending_{false};
-  rclcpp::TimerBase::SharedPtr startup_activation_timer_, motion_watchdog_timer_;
+  rclcpp::TimerBase::SharedPtr startup_activation_timer_, motion_watchdog_timer_,
+    sdk_health_timer_;
   std::mutex sdk_motion_mutex_;
-  bool sdk_motion_active_{false}, move_hold_required_{false};
+  bool sdk_motion_active_{false}, move_hold_required_{false}, target_motion_seen_{false};
   int sdk_motion_kind_{0}, jog_mode_{0}, jog_axis_{0}, jog_direction_{0};
   std::chrono::steady_clock::time_point motion_deadline_{};
   std::chrono::steady_clock::time_point last_status_publish_{}, last_io_publish_{};

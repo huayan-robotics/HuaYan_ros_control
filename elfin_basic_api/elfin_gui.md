@@ -137,7 +137,7 @@ Home 的目标固定为六个关节角 `[0, 0, 0, 0, 0, 0]` degree。只有按�
 
 ### 5.12 Z-axis Alignment
 
-按住按钮后，节点调用 `HRIF_MoveAlignToZ`，由控制器基于当前 `TCP` 和 `Base` 计算对齐目标，再通过 `HRIF_WayPoint` 执行；松开时停止。若控制器拒绝目标、逆解失败或状态不允许，GUI 显示 SDK 返回错误。
+按住按钮后，节点调用 `HRIF_MoveAlignToZ`，由控制器基于当前 `TCP` 和 `Base` 计算目标关节角，再通过 `HRIF_WayPoint` 执行；松开时停止。GUI 会先确认 10004 状态出现实际运动，再以 `moving=false`、`in_position=true`、`blending_done=true` 判定到位，自动退出对齐模式并显示 `Z Aligned`。驱动同时清除该目标的 watchdog 状态，避免到位后再次发送停止。若控制器拒绝目标、逆解失败或状态不允许，GUI 显示 SDK 返回错误。
 
 ### 5.13 TCP
 
@@ -161,7 +161,7 @@ TCP 页面用于配置当前 TCP 相对法兰中心的偏移：X/Y/Z 为 mm，RX
 Brake 是维护功能：
 
 - 仅 Servo Off、机器人静止、无故障且状态有效时允许操作。
-- 按住轴按钮调用 `HRIF_OpenBrake`，松开调用 `HRIF_CloseBrake`。
+- 当前反馈为抱闸时，点击一次调用 `HRIF_OpenBrake`；当前反馈为松闸时，再点击一次调用 `HRIF_CloseBrake`。按钮状态始终以 10004 实际反馈为准，而不是本地点击次数。
 - `/elfin_sdk/brake_state` 显示控制器 10004 推送的六轴原始状态，而不是用按钮状态模拟。
 - `CloseBrake` 返回 40017 时原样显示错误；程序不会自动调用 Blackout、安全光幕或其他 FSM 切换。
 

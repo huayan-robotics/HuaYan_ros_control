@@ -56,6 +56,8 @@ class GuiRosBridge(Node):
         self, status_callback, brake_callback, realtime_callback, io_callback, end_io_callback
     ):
         super().__init__("elfin_gui")
+        self.robot_model = self.declare_parameter("robot_model", "E05").value
+        self.robot_ip = self.declare_parameter("robot_ip", "192.168.56.103").value
         self.status_callback = status_callback
         self.brake_callback = brake_callback
         self.realtime_callback = realtime_callback
@@ -113,7 +115,7 @@ class GuiRosBridge(Node):
         wx.CallAfter(self.end_io_callback, message)
 
     @staticmethod
-    def _request(client, request, operation, callback):
+    def _request(client, request, operation, callback, timeout_ms=2000):
         if not client.service_is_ready():
             wx.CallAfter(callback, False, f"{operation} service is unavailable", None)
             return
@@ -129,7 +131,7 @@ class GuiRosBridge(Node):
             callback(success, detail, response)
 
         timeout = wx.CallLater(
-            2000,
+            timeout_ms,
             finish,
             False,
             f"{operation} timed out; elfin_sdk may have stopped",
@@ -221,7 +223,16 @@ class GuiRosBridge(Node):
         request.blend_radius = 0.0
         request.action = action
         request.hold_required = hold_required
-        self._request(self.move_target_client, request, "Move Target", callback)
+        # HRIF_MoveAlignToZ/HRIF_WayPoint can take longer than an ordinary
+        # configuration service on a real controller.  Do not report a false
+        # failure while the controller is already accepting the target.
+        self._request(
+            self.move_target_client,
+            request,
+            "Move Target",
+            callback,
+            timeout_ms=10000,
+        )
 
     def set_brake(self, axis, release, callback):
         if not self.brake_client.service_is_ready():
@@ -256,7 +267,7 @@ def make_text(parent, value="0.000", readonly=False, size=(100, 36)):
 
 
 class HeaderBar(wx.Panel):
-    def __init__(self, parent):
+    def __init__(self, parent, robot_model, robot_ip):
         super().__init__(parent)
         self.SetBackgroundColour(WHITE)
         grid = wx.FlexGridSizer(1, 7, 2, 2)
@@ -266,8 +277,8 @@ class HeaderBar(wx.Panel):
         self.cells = {}
         values = (
             ("title", "ELFIN ROBOT\nCONTROL", BLUE),
-            ("model", "Model: E05", BLUE),
-            ("ip", "IP: 192.168.56.103", BLUE),
+            ("model", f"Model: {robot_model}", BLUE),
+            ("ip", f"IP: {robot_ip}", BLUE),
             ("sdk", "SDK Connected", BLUE),
             ("servo", "Servo Off", BLUE),
             ("fault", "No Fault", BLUE),
@@ -421,7 +432,10 @@ class MainPage(wx.ScrolledWindow):
         hold.Bind(wx.EVT_LEFT_DOWN, start_hold)
         hold.Bind(wx.EVT_LEFT_UP, stop_hold)
         self._bind_target_hold(home, MoveTarget.Request.MODE_HOME)
-        self._bind_target_hold(self.align_button, MoveTarget.Request.MODE_ALIGN_Z)
+        # Z alignment is a controller-completed action.  A click starts it and
+        # a second click cancels it; unlike Home/target motion it does not rely
+        # on the GUI mouse state or periodic hold-to-run keepalives.
+        self.align_button.Bind(wx.EVT_BUTTON, lambda _e: frame.toggle_z_alignment())
         quick.Add(hold, 1)
         for child in quick.GetChildren():
             window = child.GetWindow()
@@ -782,7 +796,8 @@ class BrakeAxisControl(wx.Panel):
         self.axis = axis
         self.handler = handler
         self.click_enabled = False
-        self.pressed = False
+        self.released = False
+        self.request_pending = False
         content = wx.BoxSizer(wx.VERTICAL)
         content.AddStretchSpacer()
         self.axis_text = wx.StaticText(
@@ -797,7 +812,7 @@ class BrakeAxisControl(wx.Panel):
         self.axis_text.SetFont(axis_font)
         self.state_text = wx.StaticText(
             self,
-            label="Hold to Release",
+            label="Click to Release",
             size=(140, 24),
             style=wx.ALIGN_CENTER | wx.ST_NO_AUTORESIZE,
         )
@@ -808,42 +823,32 @@ class BrakeAxisControl(wx.Panel):
         content.AddStretchSpacer()
         self.SetSizer(content)
         for control in (self, self.axis_text, self.state_text):
-            control.Bind(wx.EVT_LEFT_DOWN, self.on_press)
-            control.Bind(wx.EVT_LEFT_UP, self.on_release)
-        self.Bind(wx.EVT_MOUSE_CAPTURE_LOST, self.on_capture_lost)
+            control.Bind(wx.EVT_LEFT_UP, self.on_click)
         self.set_state(False, False)
 
-    def on_press(self, event):
-        if self.click_enabled and not self.pressed:
-            self.pressed = True
-            if not self.HasCapture():
-                self.CaptureMouse()
-            self.handler(True)
-        event.Skip()
-
-    def on_release(self, event):
-        if self.pressed:
-            self.pressed = False
-            if self.HasCapture():
-                self.ReleaseMouse()
-            self.handler(False)
-        event.Skip()
-
-    def on_capture_lost(self, _event):
-        if self.pressed:
-            self.pressed = False
-            self.handler(False)
+    def on_click(self, _event):
+        if self.click_enabled and not self.request_pending:
+            # Controller feedback is authoritative: an engaged axis requests
+            # OpenBrake, while an already released axis requests CloseBrake.
+            target_release = not self.released
+            self.request_pending = True
+            self.click_enabled = False
+            self.state_text.SetLabel("Releasing..." if target_release else "Engaging...")
+            self.handler(target_release)
 
     def set_state(self, released, change_allowed):
-        self.click_enabled = change_allowed
+        self.released = released
+        self.click_enabled = change_allowed and not self.request_pending
         colour = GREY if released else BLUE
         self.SetBackgroundColour(colour)
         self.axis_text.SetBackgroundColour(colour)
         self.state_text.SetBackgroundColour(colour)
-        if released:
-            label = "Released"
+        if self.request_pending:
+            label = self.state_text.GetLabel()
+        elif released:
+            label = "Click to Engage"
         elif change_allowed:
-            label = "Hold to Release"
+            label = "Click to Release"
         else:
             label = "Unavailable"
         self.state_text.SetLabel(label)
@@ -851,13 +856,17 @@ class BrakeAxisControl(wx.Panel):
         self.Layout()
         self.Refresh()
 
+    def finish_request(self, change_allowed):
+        self.request_pending = False
+        self.set_state(self.released, change_allowed)
+
 
 class BrakePage(SubPage):
     """Maintenance brake release; controller feedback is authoritative."""
 
     AVAILABLE_MESSAGE = (
-        "Robot is Servo Off, stationary and fault-free. Hold an axis button to release "
-        "its brake; releasing the button requests CloseBrake.\n"
+        "Robot is Servo Off, stationary and fault-free. Click an engaged axis to "
+        "release its brake; click a released axis again to request CloseBrake.\n"
         "⚠ Joints may drop under gravity after brake release. Please support the "
         "manipulator manually!"
     )
@@ -921,6 +930,9 @@ class BrakePage(SubPage):
         if release and not self.operation_allowed:
             return
         self.frame.request_brake(axis, release)
+
+    def finish_axis_request(self, axis):
+        self.axis_buttons[axis].finish_request(self.operation_allowed)
 
 
 class FormPage(SubPage):
@@ -1050,9 +1062,18 @@ class ElfinGuiFrame(wx.Frame):
                  wx.MAXIMIZE_BOX | wx.CLOSE_BOX)
         super().__init__(None, title="Elfin Robot Control", size=(1182, 820), style=style)
         self.SetMinSize((980, 720))
+        self.ros_bridge = GuiRosBridge(
+            self.on_robot_status,
+            self.on_brake_status,
+            self.on_realtime_state,
+            self.on_io_state,
+            self.on_end_io_state,
+        )
         panel = wx.Panel(self)
         root = wx.BoxSizer(wx.VERTICAL)
-        self.header = HeaderBar(panel)
+        self.header = HeaderBar(
+            panel, self.ros_bridge.robot_model, self.ros_bridge.robot_ip
+        )
         root.Add(self.header, 0, wx.EXPAND)
 
         self.book = wx.Simplebook(panel)
@@ -1088,15 +1109,9 @@ class ElfinGuiFrame(wx.Frame):
         self.target_keepalive = None
         self.target_request_pending = False
         self.target_generation = 0
+        self.target_motion_seen = False
         self.error_dialogs = set()
         self.last_status_time = None
-        self.ros_bridge = GuiRosBridge(
-            self.on_robot_status,
-            self.on_brake_status,
-            self.on_realtime_state,
-            self.on_io_state,
-            self.on_end_io_state,
-        )
         self.ros_executor = MultiThreadedExecutor(num_threads=2)
         self.ros_executor.add_node(self.ros_bridge)
         self.ros_thread = threading.Thread(target=self.ros_executor.spin, daemon=True)
@@ -1151,6 +1166,7 @@ class ElfinGuiFrame(wx.Frame):
         elif self.header.stop.GetLabel() == "E-STOP ACTIVE":
             self.header.show_stop_result("STOP")
         self.main_page.update_robot_status(message)
+        self.update_target_completion(message)
         self.tcp_page.set_write_allowed(
             message.sdk_connected and not message.enabled and not message.moving
         )
@@ -1179,6 +1195,7 @@ class ElfinGuiFrame(wx.Frame):
         self.target_generation += 1
         self.jog_request_pending = False
         self.target_request_pending = False
+        self.target_motion_seen = False
         for timer in (self.jog_keepalive, self.target_keepalive):
             if timer is not None and timer.IsRunning():
                 timer.Stop()
@@ -1227,9 +1244,10 @@ class ElfinGuiFrame(wx.Frame):
             self.show_service_error(operation, detail)
 
     def request_brake(self, axis, release):
-        # Opening is safety-gated. A release event must still attempt CloseBrake
-        # even if status changes while the operator is holding the button.
+        # Opening is safety-gated. Closing remains available for an already
+        # released axis so the operator can request that it be engaged again.
         if release and not self.brake_operation_allowed():
+            self.brake_page.finish_axis_request(axis)
             self.update_brake_availability()
             return
         self.ros_bridge.set_brake(
@@ -1239,6 +1257,7 @@ class ElfinGuiFrame(wx.Frame):
         )
 
     def on_brake_response(self, axis, release, success, detail):
+        self.brake_page.finish_axis_request(axis)
         if success:
             return  # Wait for /elfin_sdk/brake_state; do not fake feedback.
         operation = "OpenBrake" if release else "CloseBrake"
@@ -1481,15 +1500,17 @@ class ElfinGuiFrame(wx.Frame):
             return
         self.start_target_request(mode, target)
 
-    def start_target_request(self, mode, target):
+    def start_target_request(self, mode, target, hold_required=True):
         self.target_generation += 1
         generation = self.target_generation
         self.target_start_deadline = time.monotonic() + 5.0
         self.active_target = (mode, target)
+        self.active_target_hold_required = hold_required
+        self.target_motion_seen = False
         self.target_request_pending = True
         if mode == MoveTarget.Request.MODE_ALIGN_Z:
             self.main_page.set_alignment_state("Aligning Z...", True)
-        self.ros_bridge.move_target(mode, target, MoveTarget.Request.ACTION_START, True,
+        self.ros_bridge.move_target(mode, target, MoveTarget.Request.ACTION_START, hold_required,
                                     lambda success, detail, response: self.on_target_start(
                                         generation, success, detail, response
                                     ))
@@ -1499,8 +1520,23 @@ class ElfinGuiFrame(wx.Frame):
             return
         self.target_request_pending = False
         if not success:
+            mode = self.active_target[0] if self.active_target is not None else None
+            if mode == MoveTarget.Request.MODE_ALIGN_Z:
+                # The service callback and the 10004 pushed state arrive on
+                # different threads.  On a real controller the callback can
+                # report a timeout/error just before moving=true reaches the
+                # GUI.  Defer the verdict and let authoritative motion state
+                # win instead of flashing a false failure during movement.
+                wx.CallLater(
+                    1000,
+                    self.confirm_alignment_start_failure,
+                    generation,
+                    detail,
+                )
+                return
             if (
                 self.is_transient_motion_state(detail)
+                and self.active_target_hold_required
                 and wx.GetMouseState().LeftIsDown()
                 and time.monotonic() < self.target_start_deadline
             ):
@@ -1518,8 +1554,20 @@ class ElfinGuiFrame(wx.Frame):
             wx.CallLater(
                 1500, self.main_page.set_alignment_state, "Z-axis Alignment"
             )
-        else:
+        elif self.active_target_hold_required:
             self.schedule_target_keepalive()
+
+    def confirm_alignment_start_failure(self, generation, detail):
+        if generation != self.target_generation or self.active_target is None:
+            return
+        if self.active_target[0] != MoveTarget.Request.MODE_ALIGN_Z:
+            return
+        if self.robot_moving or self.target_motion_seen:
+            self.main_page.set_alignment_state("Aligning Z...", True)
+            return
+        self.stop_target()
+        self.main_page.set_alignment_state("Z Align Failed")
+        self.show_service_error("SDK Motion", detail)
 
     @staticmethod
     def is_transient_motion_state(detail):
@@ -1582,6 +1630,34 @@ class ElfinGuiFrame(wx.Frame):
             self.main_page.set_alignment_state("Z Align Failed")
             self.show_service_error("SDK Motion", detail)
 
+    def update_target_completion(self, message):
+        """Finish Z alignment from authoritative controller state."""
+        if getattr(self, "active_target", None) is None:
+            return
+        mode, _target = self.active_target
+        if message.moving:
+            self.target_motion_seen = True
+            return
+        if not self.target_motion_seen:
+            # InPos is normally true before WayPoint starts. Do not mistake
+            # the initial state for completion; first observe actual motion.
+            return
+        if message.in_position and message.blending_done:
+            self.finish_target_at_position(mode)
+
+    def finish_target_at_position(self, mode):
+        self.active_target = None
+        self.target_generation += 1
+        self.target_request_pending = False
+        self.target_motion_seen = False
+        if self.target_keepalive is not None and self.target_keepalive.IsRunning():
+            self.target_keepalive.Stop()
+        if mode == MoveTarget.Request.MODE_ALIGN_Z:
+            self.main_page.set_alignment_state("Z Aligned")
+            wx.CallLater(
+                1500, self.main_page.set_alignment_state, "Z-axis Alignment"
+            )
+
     def stop_target(self):
         if getattr(self, "active_target", None) is None:
             return
@@ -1589,6 +1665,7 @@ class ElfinGuiFrame(wx.Frame):
         self.active_target = None
         self.target_generation += 1
         self.target_request_pending = False
+        self.target_motion_seen = False
         if self.target_keepalive is not None and self.target_keepalive.IsRunning():
             self.target_keepalive.Stop()
         self.ros_bridge.move_target(mode, target, MoveTarget.Request.ACTION_STOP, True,
@@ -1604,6 +1681,19 @@ class ElfinGuiFrame(wx.Frame):
         self.stop_target()
         target = [0.0] * 6
         self.start_target_request(mode, target)
+
+    def toggle_z_alignment(self):
+        if (
+            getattr(self, "active_target", None) is not None
+            and self.active_target[0] == MoveTarget.Request.MODE_ALIGN_Z
+        ):
+            self.stop_target()
+            return
+        self.stop_jog()
+        self.stop_target()
+        self.start_target_request(
+            MoveTarget.Request.MODE_ALIGN_Z, [0.0] * 6, hold_required=False
+        )
 
     def on_close(self, event):
         self.Hide()
