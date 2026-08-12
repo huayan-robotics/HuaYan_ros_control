@@ -18,6 +18,9 @@ The SDK node exposes:
 /elfin_sdk/continue         std_srvs/srv/Trigger
 /elfin_sdk/set_override     elfin_robot_msgs/srv/SetFloat64
 /elfin_sdk/set_tcp          elfin_robot_msgs/srv/SetPose
+/elfin_sdk/configure_tcp    elfin_robot_msgs/srv/ConfigureTcp
+/elfin_sdk/get_tcp_config   elfin_robot_msgs/srv/GetTcpConfig
+/elfin_sdk/restore_default_tcp std_srvs/srv/Trigger
 /elfin_sdk/set_ucs          elfin_robot_msgs/srv/SetPose
 /elfin_sdk/set_tcp_by_name  elfin_robot_msgs/srv/SetString
 /elfin_sdk/set_ucs_by_name  elfin_robot_msgs/srv/SetString
@@ -55,6 +58,10 @@ Common SDK command examples:
 ```bash
 ros2 service call /elfin_sdk/set_tcp elfin_robot_msgs/srv/SetPose \
   "{pose: [0.0, 0.0, 150.0, 0.0, 0.0, 0.0]}"
+
+# Persist, select, and verify a named TCP in the controller configuration.
+ros2 service call /elfin_sdk/configure_tcp elfin_robot_msgs/srv/ConfigureTcp \
+  "{name: ROS_TCP, pose: [0.0, 0.0, 150.0, 0.0, 0.0, 0.0]}"
 
 ros2 service call /elfin_sdk/set_digital_io elfin_robot_msgs/srv/SetDigitalIO \
   "{domain: box_do, index: 0, value: true}"

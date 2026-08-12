@@ -25,9 +25,10 @@ from elfin_robot_msgs.msg import (
     ElfinRobotStatus,
 )
 from elfin_robot_msgs.srv import (
+    ConfigureTcp,
     GetInt32,
     GetPayload,
-    GetPose,
+    GetTcpConfig,
     Jog,
     MoveTarget,
     SetBrake,
@@ -35,7 +36,6 @@ from elfin_robot_msgs.srv import (
     SetFloat64,
     SetInt16,
     SetPayload,
-    SetPose,
 )
 
 
@@ -43,6 +43,7 @@ BLUE = wx.Colour(49, 132, 214)
 LIGHT_BLUE = wx.Colour(219, 238, 255)
 PALE_BLUE = wx.Colour(237, 247, 255)
 RED = wx.Colour(238, 63, 69)
+GREEN = wx.Colour(46, 160, 67)
 YELLOW = wx.Colour(255, 211, 57)
 GREY = wx.Colour(202, 207, 213)
 WHITE = wx.Colour(255, 255, 255)
@@ -70,8 +71,15 @@ class GuiRosBridge(Node):
         self.freedrive_client = self.create_client(SetBool, "/elfin_sdk/set_freedrive")
         self.ros_control_client = self.create_client(SetBool, "/elfin_sdk/set_ros_control")
         self.speed_client = self.create_client(SetFloat64, "/elfin_sdk/set_speed_ratio")
-        self.get_tcp_client = self.create_client(GetPose, "/elfin_sdk/get_tcp")
-        self.set_tcp_client = self.create_client(SetPose, "/elfin_sdk/set_tcp")
+        self.get_tcp_client = self.create_client(
+            GetTcpConfig, "/elfin_sdk/get_tcp_config"
+        )
+        self.configure_tcp_client = self.create_client(
+            ConfigureTcp, "/elfin_sdk/configure_tcp"
+        )
+        self.restore_default_tcp_client = self.create_client(
+            Trigger, "/elfin_sdk/restore_default_tcp"
+        )
         self.get_safety_client = self.create_client(
             GetInt32, "/elfin_sdk/get_collision_level"
         )
@@ -174,12 +182,25 @@ class GuiRosBridge(Node):
         self._request(self.speed_client, request, "Velocity Scaling", callback)
 
     def get_tcp(self, callback):
-        self._request(self.get_tcp_client, GetPose.Request(), "Get TCP", callback)
+        self._request(
+            self.get_tcp_client, GetTcpConfig.Request(), "Get TCP", callback
+        )
 
-    def set_tcp(self, pose, callback):
-        request = SetPose.Request()
+    def set_tcp(self, name, pose, callback):
+        request = ConfigureTcp.Request()
+        request.name = name
         request.pose = pose
-        self._request(self.set_tcp_client, request, "Set TCP", callback)
+        self._request(
+            self.configure_tcp_client, request, "Configure named TCP", callback
+        )
+
+    def restore_default_tcp(self, callback):
+        self._request(
+            self.restore_default_tcp_client,
+            Trigger.Request(),
+            "Restore default TCP",
+            callback,
+        )
 
     def get_safety(self, callback):
         self._request(self.get_safety_client, GetInt32.Request(), "Get Safety Level", callback)
@@ -270,18 +291,20 @@ class HeaderBar(wx.Panel):
     def __init__(self, parent, robot_model, robot_ip):
         super().__init__(parent)
         self.SetBackgroundColour(WHITE)
-        grid = wx.FlexGridSizer(1, 7, 2, 2)
-        # The product title and IP address need more room than the state cells.
-        for column, proportion in enumerate((2, 1, 2, 1, 1, 1, 1)):
+        grid = wx.FlexGridSizer(1, 8, 2, 2)
+        # Model, IP, ROS, SDK, servo, fault, error code, stop.
+        for column, proportion in enumerate((1, 2, 1, 1, 1, 1, 2, 1)):
             grid.AddGrowableCol(column, proportion)
         self.cells = {}
+        self.cell_panels = {}
         values = (
-            ("title", "ELFIN ROBOT\nCONTROL", BLUE),
             ("model", f"Model: {robot_model}", BLUE),
             ("ip", f"IP: {robot_ip}", BLUE),
+            ("ros", "ROS Inactivated", BLUE),
             ("sdk", "SDK Connected", BLUE),
             ("servo", "Servo Off", BLUE),
-            ("fault", "No Fault", BLUE),
+            ("fault", "No Fault", GREEN),
+            ("error", "Error Code: 0", GREEN),
         )
         for key, label, colour in values:
             # Keep the colour on a fixed-size panel.  On GTK a StaticText can
@@ -293,7 +316,7 @@ class HeaderBar(wx.Panel):
             text.SetForegroundColour(WHITE)
             text.SetBackgroundColour(colour)
             font = text.GetFont()
-            font.SetPointSize(10 if key == "title" else 11)
+            font.SetPointSize(11)
             font.SetWeight(wx.FONTWEIGHT_BOLD)
             text.SetFont(font)
             cell_sizer.AddStretchSpacer()
@@ -302,6 +325,7 @@ class HeaderBar(wx.Panel):
             cell.SetSizer(cell_sizer)
             grid.Add(cell, 1, wx.EXPAND)
             self.cells[key] = text
+            self.cell_panels[key] = cell
         self.stop = make_button(self, "STOP", colour=RED)
         self.stop.SetForegroundColour(WHITE)
         self.stop.Bind(wx.EVT_BUTTON, lambda _event: self.GetTopLevelParent().emergency_stop())
@@ -311,13 +335,30 @@ class HeaderBar(wx.Panel):
 
     def set_servo(self, enabled):
         self.cells["servo"].SetLabel("Servo On" if enabled else "Servo Off")
+        self._set_cell_colour("servo", GREEN if enabled else BLUE)
 
     def set_fault(self, faulted):
         self.cells["fault"].SetLabel("Fault" if faulted else "No Fault")
-        # Status cells keep the same blue appearance; only their text changes.
+        self._set_cell_colour("fault", RED if faulted else GREEN)
+
+    def set_error_code(self, error_code):
+        self.cells["error"].SetLabel(f"Error Code: {error_code}")
+        self._set_cell_colour("error", RED if error_code != 0 else GREEN)
 
     def set_sdk_connected(self, connected):
         self.cells["sdk"].SetLabel("SDK Connected" if connected else "SDK Disconnected")
+        self._set_cell_colour("sdk", GREEN if connected else BLUE)
+
+    def set_ros_control(self, activated):
+        self.cells["ros"].SetLabel(
+            "ROS Activated" if activated else "ROS Inactivated"
+        )
+        self._set_cell_colour("ros", GREEN if activated else BLUE)
+
+    def _set_cell_colour(self, key, colour):
+        self.cell_panels[key].SetBackgroundColour(colour)
+        self.cells[key].SetBackgroundColour(colour)
+        self.cell_panels[key].Refresh()
 
     def show_stop_result(self, label):
         self.stop.SetLabel(label)
@@ -500,6 +541,7 @@ class MainPage(wx.ScrolledWindow):
         self.free_drive_failure_until = 0.0
         self.free_drive_failure_label = ""
         self.ros_active = False
+        self.ros_pending = None
         self.target_mode = MoveTarget.Request.MODE_JOINT
         for row in self.joint_rows:
             row.target.Bind(
@@ -566,7 +608,29 @@ class MainPage(wx.ScrolledWindow):
             self.free_drive.SetBackgroundColour(YELLOW if message.freedrive else LIGHT_BLUE)
             self.free_drive.Enable(message.sdk_connected)
             self.free_drive.Refresh()
-        self.ros.SetLabel("ROS Inactivate" if message.ros_control_active else "ROS Activate")
+        if self.ros_pending is not None:
+            if message.ros_control_active == self.ros_pending:
+                self.ros_pending = None
+            else:
+                self.ros.Enable(False)
+                return
+        # This lower control describes the action available to the operator;
+        # the header reports the actual ROS Control state.
+        self.ros.SetLabel(
+            "ROS Inactivate" if message.ros_control_active else "ROS Activate"
+        )
+        self.ros.SetBackgroundColour(LIGHT_BLUE)
+        self.ros.Enable(message.sdk_connected)
+        self.ros.Refresh()
+
+    def set_ros_pending(self, activating):
+        self.ros_pending = activating
+        self.ros.SetLabel("Activating..." if activating else "Deactivating...")
+        self.ros.Enable(False)
+
+    def finish_ros_request(self):
+        self.ros_pending = None
+        self.ros.Enable(True)
 
     def set_freedrive_pending(self, entering):
         self.free_drive_pending = entering
@@ -628,16 +692,23 @@ class SubPage(wx.Panel):
         self.root.Add(top, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 20)
         self.SetSizer(self.root)
 
-    def add_actions(self, save_handler, cancel_handler):
+    def add_actions(self, save_handler, cancel_handler, restore_handler=None):
         actions = wx.BoxSizer(wx.HORIZONTAL)
         actions.AddStretchSpacer()
+        if restore_handler is not None:
+            restore = make_button(
+                self, "Restore Default", restore_handler, WHITE, (155, 45)
+            )
+            actions.Add(restore, 0, wx.RIGHT, 15)
+        else:
+            restore = None
         save = make_button(self, "Save", save_handler, BLUE, (130, 45))
         save.SetForegroundColour(WHITE)
         actions.Add(save, 0, wx.RIGHT, 15)
         cancel = make_button(self, "Cancel", cancel_handler, WHITE, (130, 45))
         actions.Add(cancel, 0)
         self.root.Add(actions, 0, wx.EXPAND | wx.ALL, 25)
-        return save, cancel
+        return save, cancel, restore
 
 
 class SafetyPage(SubPage):
@@ -662,7 +733,7 @@ class SafetyPage(SubPage):
         self.root.AddStretchSpacer()
         self.root.Add(row, 0, wx.EXPAND | wx.ALL, 25)
         self.root.AddStretchSpacer()
-        self.save_button, self.cancel_button = self.add_actions(self.save, self.cancel)
+        self.save_button, self.cancel_button, _ = self.add_actions(self.save, self.cancel)
         self.select(0)
 
     def set_write_allowed(self, allowed):
@@ -936,13 +1007,18 @@ class BrakePage(SubPage):
 
 
 class FormPage(SubPage):
-    def __init__(self, parent, frame, title, name, fields):
+    def __init__(
+        self, parent, frame, title, name, fields,
+        name_editable=False, restore_handler=None
+    ):
         super().__init__(parent, frame, title)
         self.controls = {}
         form = wx.FlexGridSizer(len(fields) + 1, 3, 18, 18)
         form.Add(wx.StaticText(self, label="Name"), 0, wx.ALIGN_CENTER_VERTICAL)
-        fixed_name = make_text(self, name, readonly=True, size=(250, 38))
-        form.Add(fixed_name, 0)
+        self.name_control = make_text(
+            self, name, readonly=not name_editable, size=(250, 38)
+        )
+        form.Add(self.name_control, 0)
         form.AddSpacer(1)
         for key, unit in fields:
             form.Add(wx.StaticText(self, label=key), 0, wx.ALIGN_CENTER_VERTICAL)
@@ -954,7 +1030,9 @@ class FormPage(SubPage):
         self.root.AddStretchSpacer()
         self.root.Add(form, 0, wx.ALIGN_CENTER | wx.ALL, 30)
         self.root.AddStretchSpacer()
-        self.save_button, self.cancel_button = self.add_actions(self.save, self.cancel)
+        self.save_button, self.cancel_button, self.restore_button = self.add_actions(
+            self.save, self.cancel, restore_handler
+        )
 
     def save(self, _event):
         for key, control in self.controls.items():
@@ -981,19 +1059,25 @@ class TcpPage(FormPage):
             parent,
             frame,
             "TCP",
-            "Current TCP",
+            "TCP",
             (("X", "mm"), ("Y", "mm"), ("Z", "mm"),
              ("RX", "°"), ("RY", "°"), ("RZ", "°")),
+            name_editable=True,
+            restore_handler=self.restore_default,
         )
         self.set_write_allowed(False)
 
     def set_write_allowed(self, allowed):
+        self.name_control.SetEditable(allowed)
+        self.name_control.SetBackgroundColour(WHITE if allowed else PALE_BLUE)
         for control in self.controls.values():
             control.SetEditable(allowed)
             control.SetBackgroundColour(WHITE if allowed else PALE_BLUE)
         self.save_button.Enable(allowed)
+        self.restore_button.Enable(allowed)
 
-    def set_pose(self, pose):
+    def set_config(self, name, pose):
+        self.name_control.SetValue(name)
         for name, value in zip(self.FIELD_ORDER, pose):
             self.controls[name].SetValue(f"{value:.3f}")
         self.saved_values = {
@@ -1001,15 +1085,23 @@ class TcpPage(FormPage):
         }
 
     def save(self, _event):
+        name = self.name_control.GetValue().strip()
+        if not name:
+            wx.MessageBox("TCP name must not be empty.", "Invalid TCP", wx.OK | wx.ICON_WARNING)
+            self.name_control.SetFocus()
+            return
         try:
             pose = [float(self.controls[name].GetValue()) for name in self.FIELD_ORDER]
         except ValueError:
             wx.MessageBox("TCP values must be numbers.", "Invalid TCP", wx.OK | wx.ICON_WARNING)
             return
-        self.frame.set_tcp(pose)
+        self.frame.set_tcp(name, pose)
 
     def cancel(self, _event):
         self.frame.read_tcp()
+
+    def restore_default(self, _event):
+        self.frame.restore_default_tcp()
 
 
 class PayloadPage(FormPage):
@@ -1160,7 +1252,9 @@ class ElfinGuiFrame(wx.Frame):
         self.robot_faulted = message.error
         self.header.set_servo(message.enabled)
         self.header.set_fault(message.error)
+        self.header.set_error_code(message.error_code)
         self.header.set_sdk_connected(message.sdk_connected)
+        self.header.set_ros_control(message.ros_control_active)
         if message.emergency_stop or message.safeguard_stop:
             self.header.show_stop_result("E-STOP ACTIVE")
         elif self.header.stop.GetLabel() == "E-STOP ACTIVE":
@@ -1182,6 +1276,7 @@ class ElfinGuiFrame(wx.Frame):
         self.robot_status_received = False
         self.sdk_connected = False
         self.header.set_sdk_connected(False)
+        self.header.set_ros_control(False)
         self.cancel_motion_keepalives()
         self.tcp_page.set_write_allowed(False)
         self.safety_page.set_write_allowed(False)
@@ -1266,9 +1361,21 @@ class ElfinGuiFrame(wx.Frame):
     def set_servo(self, enabled):
         self.ros_bridge.set_enabled(
             enabled,
-            lambda success, detail, response: self.command_result(
-                "Servo On" if enabled else "Servo Off", success, detail, response
+            lambda success, detail, response: self.on_servo_result(
+                enabled, success, detail, response
             ),
+        )
+
+    def on_servo_result(self, enabled, success, detail, _response):
+        operation = "Servo On" if enabled else "Servo Off"
+        if not success:
+            self.show_service_error(operation, detail)
+            return
+        wx.MessageBox(
+            f"{operation} succeeded.",
+            "Servo",
+            wx.OK | wx.ICON_INFORMATION,
+            parent=self,
         )
 
     def clear_fault(self):
@@ -1286,10 +1393,9 @@ class ElfinGuiFrame(wx.Frame):
         )
 
     def on_stop_result(self, success, detail, _response):
-        label = "E-STOP ACTIVE" if success else "STOP FAILED"
+        label = "STOPPED" if success else "STOP FAILED"
         self.header.show_stop_result(label)
-        if not success:
-            wx.CallLater(1200, self.header.show_stop_result, "STOP")
+        wx.CallLater(1200, self.header.show_stop_result, "STOP")
         if not success:
             self.show_service_error("Stop", detail)
 
@@ -1313,14 +1419,20 @@ class ElfinGuiFrame(wx.Frame):
         self.main_page.free_drive.SetLabel("Waiting for feedback...")
 
     def set_ros_control(self, enabled):
+        self.main_page.set_ros_pending(enabled)
         self.ros_bridge.set_ros_control(
             enabled,
-            lambda success, detail, response: self.command_result(
-                "Activate ROS Control" if enabled else "Deactivate ROS Control",
-                success,
-                detail,
-                response,
+            lambda success, detail, response: self.on_ros_control_result(
+                enabled, success, detail, response
             ),
+        )
+
+    def on_ros_control_result(self, enabled, success, detail, _response):
+        if success:
+            return  # Wait for robot_status before showing the final state.
+        self.main_page.finish_ros_request()
+        self.show_service_error(
+            "Activate ROS Control" if enabled else "Deactivate ROS Control", detail
         )
 
     def set_speed(self, ratio):
@@ -1338,9 +1450,9 @@ class ElfinGuiFrame(wx.Frame):
         if not success:
             self.show_service_error("Get TCP", detail)
             return
-        self.tcp_page.set_pose(response.pose)
+        self.tcp_page.set_config(response.name, response.pose)
 
-    def set_tcp(self, pose):
+    def set_tcp(self, name, pose):
         if not (
             self.robot_status_received
             and self.sdk_connected
@@ -1349,12 +1461,36 @@ class ElfinGuiFrame(wx.Frame):
         ):
             self.show_service_error("Set TCP", "Servo Off and a stationary robot are required")
             return
-        self.ros_bridge.set_tcp(pose, self.on_tcp_written)
+        self.ros_bridge.set_tcp(name, pose, self.on_tcp_written)
 
     def on_tcp_written(self, success, detail, _response):
         if not success:
             self.show_service_error("Set TCP", detail)
             return
+        self.tcp_page.set_config(_response.active_name, _response.actual_pose)
+        self.set_status(
+            f"TCP '{_response.active_name}' saved as controller default and selected"
+        )
+
+    def restore_default_tcp(self):
+        if not (
+            self.robot_status_received
+            and self.sdk_connected
+            and not self.servo_enabled
+            and not self.robot_moving
+        ):
+            self.show_service_error(
+                "Restore Default TCP",
+                "Servo Off and a stationary robot are required",
+            )
+            return
+        self.ros_bridge.restore_default_tcp(self.on_default_tcp_restored)
+
+    def on_default_tcp_restored(self, success, detail, _response):
+        if not success:
+            self.show_service_error("Restore Default TCP", detail)
+            return
+        self.set_status("Controller default TCP restored to 'TCP'")
         self.read_tcp()
 
     def read_safety(self):

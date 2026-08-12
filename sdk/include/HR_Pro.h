@@ -1884,6 +1884,15 @@ ROBOT_PRO_API int HRIF_CalTcp4P(unsigned int boxID, unsigned int rbtID,
 ROBOT_PRO_API int HRIF_SetTCP(unsigned int boxID, unsigned int rbtID, double dTcp_X, double dTcp_Y, double dTcp_Z, double dTcp_Rx, double dTcp_Ry, double dTcp_Rz);
 
 /**
+ * @brief: Create or update a named TCP in the controller configuration.
+ * @note: This symbol is exported by the bundled libHR_Pro.so but was missing
+ *        from the matching public header.
+ */
+ROBOT_PRO_API int HRIF_ConfigTCP(unsigned int boxID, unsigned int rbtID, string sTcpName,
+                    double dTcp_X, double dTcp_Y, double dTcp_Z,
+                    double dTcp_Rx, double dTcp_Ry, double dTcp_Rz);
+
+/**
  *	@brief: Set current UCS 
  *	@param boxID : Control box ID, 0 as default 
  *	@param rbtID : Robot ID, 0 as default 

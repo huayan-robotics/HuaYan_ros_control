@@ -62,8 +62,11 @@ GUI 不直接连接控制器端口。它只通过 ROS 2 与 `elfin_sdk_node` 通
 | `/elfin_sdk/set_freedrive` | `std_srvs/SetBool` | `HRIF_GrpOpenFreeDriver` / `HRIF_GrpCloseFreeDriver` | 普通 Free Drive |
 | `/elfin_sdk/set_ros_control` | `std_srvs/SetBool` | `controller_manager/SwitchController` | ROS Control 开关 |
 | `/elfin_sdk/set_speed_ratio` | `SetFloat64` | `HRIF_SetOverride` | Velocity Scaling |
-| `/elfin_sdk/get_tcp` | `GetPose` | `HRIF_ReadCurTCP` | 读取当前 TCP |
-| `/elfin_sdk/set_tcp` | `SetPose` | `HRIF_SetTCP` | 设置当前 TCP |
+| `/elfin_sdk/get_tcp` | `GetPose` | `HRIF_ReadCurTCP` | 兼容接口：读取当前 TCP 参数，不包含名称 |
+| `/elfin_sdk/get_tcp_config` | `GetTcpConfig` | `HRIF_ReadTCPByName` | 读取节点当前使用的 TCP 名称和参数 |
+| `/elfin_sdk/set_tcp` | `SetPose` | `HRIF_SetTCP` | 兼容接口：设置临时当前 TCP |
+| `/elfin_sdk/configure_tcp` | `ConfigureTcp` | `HRIF_ConfigTCP` + `HRIF_SetDftTCP` + `HRIF_SetTCPByName` + `HRIF_ReadTCPByName` | 写入具名 TCP，设为控制器默认和当前 TCP，并回读校验 |
+| `/elfin_sdk/restore_default_tcp` | `Trigger` | `HRIF_SetDftTCP("TCP")` + `HRIF_SetTCPByName("TCP")` | 恢复约定的原始默认 TCP |
 | `/elfin_sdk/get_collision_level` | `GetInt32` | `HRIF_GetCollideLevel` | 读取 Safety Level |
 | `/elfin_sdk/set_collision_level` | `SetInt16` | `HRIF_SetCollideLevel` | 设置 Safety Level |
 | `/elfin_sdk/get_payload` | `GetPayload` | `HRIF_ReadPayload`、`HRIF_ReadMaxPayload` | 读取负载 |
@@ -83,7 +86,8 @@ SDK 节点还保留 Pause、Continue、Force Free Drive 等接口，但当前 GU
 - SDK 8893 原始字段按控制器协议使用 degree 和 mm，硬件层转换为 ROS 标准单位。
 - X/Y/Z/RX/RY/RZ 表示末端 TCP 相对 Base 坐标系的位姿，不是六个关节角。
 - `HRIF_LongJogL` 的 axis 0～5 分别代表 X、Y、Z、RX、RY、RZ。
-- 笛卡尔目标通过 `HRIF_WayPoint` 执行，当前 TCP 为 `TCP`，用户坐标系为 `Base`。
+- SDK 节点启动时约定并选中原始默认 TCP 名称 `TCP`；用户坐标系固定为 `Base`。
+- 保存新 TCP 后，笛卡尔目标和 Z 轴对齐使用节点记录的活动 TCP 名称，不再硬编码 `TCP`。
 
 ## 5. 各功能实现
 
@@ -141,11 +145,13 @@ Home 的目标固定为六个关节角 `[0, 0, 0, 0, 0, 0]` degree。只有按�
 
 ### 5.13 TCP
 
-TCP 页面用于配置当前 TCP 相对法兰中心的偏移：X/Y/Z 为 mm，RX/RY/RZ 为 degree。
+TCP 页面用于配置控制器数据库中的具名 TCP，其位姿为相对法兰中心的偏移：X/Y/Z 为 mm，RX/RY/RZ 为 degree。名称由用户输入。
 
-- 页面打开时用 `/elfin_sdk/get_tcp` 读取 `HRIF_ReadCurTCP` 的实际值。
-- 保存时用 `/elfin_sdk/set_tcp` 调用 `HRIF_SetTCP`。
-- 只设置当前 TCP，不创建永久命名 TCP。
+- 页面打开时用 `/elfin_sdk/get_tcp_config` 读取活动 TCP 名称及控制器中的实际参数。
+- 保存时调用 `/elfin_sdk/configure_tcp`：先用 `HRIF_ConfigTCP` 创建或更新具名 TCP，再用 `HRIF_SetDftTCP` 和 `HRIF_SetTCPByName` 将其设为控制器默认及当前 TCP，最后用 `HRIF_ReadTCPByName` 回读校验。
+- 保存成功后，`LongJogL` 使用控制器当前 TCP，`WayPoint` 和 `MoveAlignToZ` 显式使用同一个活动 TCP 名称。
+- `Restore Default` 调用 `/elfin_sdk/restore_default_tcp`，将控制器默认、当前及节点活动 TCP 都恢复为约定名称 `TCP`；不会删除用户创建的其他 TCP。
+- 只有名称设置成功且六个回读值与请求值一致时，GUI 才显示保存成功。
 - 仅 Servo Off、机器人静止且状态有效时允许写入。
 
 ### 5.14 Safety Level

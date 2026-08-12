@@ -1,0 +1,7 @@
+---
+bool success
+string message
+string name
+
+# SDK-native pose: [X(mm), Y(mm), Z(mm), RX(deg), RY(deg), RZ(deg)].
+float64[6] pose

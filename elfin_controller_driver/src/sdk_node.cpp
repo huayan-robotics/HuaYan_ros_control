@@ -18,6 +18,8 @@
 #include <elfin_robot_msgs/srv/get_int32.hpp>
 #include <elfin_robot_msgs/srv/get_payload.hpp>
 #include <elfin_robot_msgs/srv/get_pose.hpp>
+#include <elfin_robot_msgs/srv/get_tcp_config.hpp>
+#include <elfin_robot_msgs/srv/configure_tcp.hpp>
 #include <elfin_robot_msgs/srv/jog.hpp>
 #include <elfin_robot_msgs/srv/move_target.hpp>
 #include <elfin_robot_msgs/srv/set_analog_io.hpp>
@@ -134,16 +136,12 @@ public:
     stop_service_ = create_service<std_srvs::srv::Trigger>("~/stop",
       [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
         std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
-        int code = 0;
+        int code;
         {
           std::lock_guard<std::mutex> lock(sdk_motion_mutex_);
           code = stop_sdk_motion_locked();
         }
-        const int estop_code = HRIF_EnterSafetyGuard(box_id_, robot_id_, 1);
-        if (estop_code == 0) {soft_estop_active_ = true;}
-        response->success = estop_code == 0;
-        response->message = estop_code == 0 ? "software emergency stop active" :
-          sdk_result(estop_code) + "; motion stop result: " + sdk_result(code);
+        set_response(code, response);
       }, rmw_qos_profile_services_default, service_group_);
     reset_service_ = create_service<std_srvs::srv::Trigger>("~/reset",
       [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
@@ -207,12 +205,79 @@ public:
         }
         set_response(HRIF_SetTCP(box_id_, robot_id_, p[0], p[1], p[2], p[3], p[4], p[5]), response);
       }, rmw_qos_profile_services_default, service_group_);
+    configure_tcp_service_ = create_service<elfin_robot_msgs::srv::ConfigureTcp>(
+      "~/configure_tcp",
+      [this](const std::shared_ptr<elfin_robot_msgs::srv::ConfigureTcp::Request> request,
+        std::shared_ptr<elfin_robot_msgs::srv::ConfigureTcp::Response> response) {
+        if (!require_disabled("configure TCP", response)) {return;}
+        if (request->name.empty()) {
+          response->success = false; response->message = "TCP name must not be empty"; return;
+        }
+        const auto & p = request->pose;
+        if (!std::all_of(p.begin(), p.end(), [](double value) {return std::isfinite(value);})) {
+          response->success = false; response->message = "TCP values must be finite"; return;
+        }
+        int code = HRIF_ConfigTCP(
+          box_id_, robot_id_, request->name,
+          p[0], p[1], p[2], p[3], p[4], p[5]);
+        if (code == 0) {
+          code = HRIF_SetDftTCP(box_id_, robot_id_, request->name);
+        }
+        if (code == 0) {
+          code = HRIF_SetTCPByName(box_id_, robot_id_, request->name);
+        }
+        if (code == 0) {
+          auto & actual = response->actual_pose;
+          code = HRIF_ReadTCPByName(
+            box_id_, robot_id_, request->name,
+            actual[0], actual[1], actual[2], actual[3], actual[4], actual[5]);
+        }
+        if (code == 0) {
+          constexpr double kTolerance = 1e-6;
+          const bool matches = std::equal(
+            p.begin(), p.end(), response->actual_pose.begin(),
+            [](double requested, double actual) {
+              return std::abs(requested - actual) <= kTolerance;
+            });
+          if (!matches) {
+            response->success = false;
+            response->message = "named TCP readback differs from requested values";
+            return;
+          }
+          active_tcp_name_ = request->name;
+          response->active_name = active_tcp_name_;
+        }
+        set_response(code, response);
+      }, rmw_qos_profile_services_default, service_group_);
     get_tcp_service_ = create_service<elfin_robot_msgs::srv::GetPose>("~/get_tcp",
       [this](const std::shared_ptr<elfin_robot_msgs::srv::GetPose::Request>,
         std::shared_ptr<elfin_robot_msgs::srv::GetPose::Response> response) {
         auto & p = response->pose;
         const int code = HRIF_ReadCurTCP(
           box_id_, robot_id_, p[0], p[1], p[2], p[3], p[4], p[5]);
+        set_response(code, response);
+      }, rmw_qos_profile_services_default, service_group_);
+    get_tcp_config_service_ = create_service<elfin_robot_msgs::srv::GetTcpConfig>(
+      "~/get_tcp_config",
+      [this](const std::shared_ptr<elfin_robot_msgs::srv::GetTcpConfig::Request>,
+        std::shared_ptr<elfin_robot_msgs::srv::GetTcpConfig::Response> response) {
+        response->name = active_tcp_name_;
+        auto & p = response->pose;
+        const int code = HRIF_ReadTCPByName(
+          box_id_, robot_id_, active_tcp_name_,
+          p[0], p[1], p[2], p[3], p[4], p[5]);
+        set_response(code, response);
+      }, rmw_qos_profile_services_default, service_group_);
+    restore_default_tcp_service_ = create_service<std_srvs::srv::Trigger>(
+      "~/restore_default_tcp",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+        std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+        if (!require_disabled("restore default TCP", response)) {return;}
+        int code = HRIF_SetDftTCP(box_id_, robot_id_, default_tcp_name_);
+        if (code == 0) {
+          code = HRIF_SetTCPByName(box_id_, robot_id_, default_tcp_name_);
+        }
+        if (code == 0) {active_tcp_name_ = default_tcp_name_;}
         set_response(code, response);
       }, rmw_qos_profile_services_default, service_group_);
     ucs_service_ = create_service<elfin_robot_msgs::srv::SetPose>("~/set_ucs",
@@ -225,7 +290,9 @@ public:
       [this](const std::shared_ptr<elfin_robot_msgs::srv::SetString::Request> request,
         std::shared_ptr<elfin_robot_msgs::srv::SetString::Response> response) {
         if (!require_disabled("set TCP by name", response)) {return;}
-        set_response(HRIF_SetTCPByName(box_id_, robot_id_, request->data), response);
+        const int code = HRIF_SetTCPByName(box_id_, robot_id_, request->data);
+        if (code == 0) {active_tcp_name_ = request->data;}
+        set_response(code, response);
       }, rmw_qos_profile_services_default, service_group_);
     ucs_name_service_ = create_service<elfin_robot_msgs::srv::SetString>("~/set_ucs_by_name",
       [this](const std::shared_ptr<elfin_robot_msgs::srv::SetString::Request> request,
@@ -359,6 +426,14 @@ public:
     if (code != 0) {RCLCPP_ERROR(get_logger(), "SDK connection failed: %s", sdk_result(code).c_str()); return false;}
     sdk_connected_ = true;
     RCLCPP_INFO(get_logger(), "SDK connected to %s:%d", robot_ip_.c_str(), sdk_port_);
+    const int tcp_code = HRIF_SetTCPByName(box_id_, robot_id_, default_tcp_name_);
+    if (tcp_code == 0) {
+      active_tcp_name_ = default_tcp_name_;
+      RCLCPP_INFO(get_logger(), "Controller TCP selected: %s", active_tcp_name_.c_str());
+    } else {
+      RCLCPP_WARN(get_logger(), "Could not select conventional default TCP '%s': %s",
+        default_tcp_name_.c_str(), sdk_result(tcp_code).c_str());
+    }
     state_running_ = true;
     state_thread_ = std::thread(&ElfinSdkNode::state_loop, this);
     return true;
@@ -380,6 +455,11 @@ public:
       box_id_, robot_ip_.c_str(), static_cast<unsigned short>(sdk_port_));
     if (code == 0) {
       sdk_connected_ = true;
+      const int tcp_code = HRIF_SetTCPByName(box_id_, robot_id_, active_tcp_name_);
+      if (tcp_code != 0) {
+        RCLCPP_WARN(get_logger(), "Could not restore active TCP '%s' after reconnect: %s",
+          active_tcp_name_.c_str(), sdk_result(tcp_code).c_str());
+      }
       RCLCPP_INFO(get_logger(), "SDK 10003 session reconnected to %s:%d",
         robot_ip_.c_str(), sdk_port_);
     } else {
@@ -486,7 +566,7 @@ private:
     if (align_z) {
       bool reached = false;
       const int align_code = HRIF_MoveAlignToZ(
-        box_id_, robot_id_, "TCP", "Base", reached, target[0], target[1], target[2],
+        box_id_, robot_id_, active_tcp_name_, "Base", reached, target[0], target[1], target[2],
         target[3], target[4], target[5]);
       if (align_code != 0) {
         RCLCPP_ERROR(get_logger(), "HRIF_MoveAlignToZ failed: %s",
@@ -520,7 +600,7 @@ private:
       joint ? t[0] : reference_joints[0], joint ? t[1] : reference_joints[1],
       joint ? t[2] : reference_joints[2], joint ? t[3] : reference_joints[3],
       joint ? t[4] : reference_joints[4], joint ? t[5] : reference_joints[5],
-      "TCP", "Base", request->velocity, request->acceleration, request->blend_radius,
+      active_tcp_name_, "Base", request->velocity, request->acceleration, request->blend_radius,
       joint ? 1 : 0, 0, 0, 0, align_z ? "ros_gui_align_z" : "ros_gui_target");
     if (code != 0) {
       RCLCPP_ERROR(get_logger(), "%s failed: %s",
@@ -848,6 +928,8 @@ private:
   }
 
   std::string robot_ip_, motion_controller_;
+  const std::string default_tcp_name_{"TCP"};
+  std::string active_tcp_name_{default_tcp_name_};
   int sdk_port_, state_port_, state_socket_timeout_ms_, state_disconnect_timeout_ms_;
   double io_publish_rate_, status_publish_rate_;
   bool auto_start_ros_control_{false};
@@ -864,7 +946,10 @@ private:
     continue_service_;
   rclcpp::Service<elfin_robot_msgs::srv::SetFloat64>::SharedPtr override_service_, speed_ratio_service_;
   rclcpp::Service<elfin_robot_msgs::srv::SetPose>::SharedPtr tcp_service_, ucs_service_;
+  rclcpp::Service<elfin_robot_msgs::srv::ConfigureTcp>::SharedPtr configure_tcp_service_;
   rclcpp::Service<elfin_robot_msgs::srv::GetPose>::SharedPtr get_tcp_service_;
+  rclcpp::Service<elfin_robot_msgs::srv::GetTcpConfig>::SharedPtr get_tcp_config_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr restore_default_tcp_service_;
   rclcpp::Service<elfin_robot_msgs::srv::SetString>::SharedPtr tcp_name_service_, ucs_name_service_;
   rclcpp::Service<elfin_robot_msgs::srv::SetDigitalIO>::SharedPtr digital_io_service_;
   rclcpp::Service<elfin_robot_msgs::srv::SetAnalogIO>::SharedPtr analog_io_service_;

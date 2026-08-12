@@ -1,0 +1,8 @@
+# Persistent named TCP in SDK-native units.
+string name
+float64[6] pose
+---
+bool success
+string message
+string active_name
+float64[6] actual_pose
