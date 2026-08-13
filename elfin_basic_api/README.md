@@ -41,6 +41,29 @@ ros2 launch elfin_basic_api elfin_gui_new.launch.py \
   robot_model:=E05 robot_ip:=192.168.56.103
 ```
 
+The complete GUI launch reads `update_rate` from the unified
+`elfin_robot_bringup/config/elfin_control.yaml` file. Use 1000 Hz for a normal
+1 ms controller and 250 Hz for a controller version whose update package name
+contains `4ms`. Only this value needs to be changed for normal use:
+
+```yaml
+elfin_control:
+  update_rate: 1000   # 1 ms version; use 250 for a 4 ms version
+```
+
+The value can also be overridden for one GUI launch:
+
+```bash
+ros2 launch elfin_basic_api elfin_gui_new.launch.py \
+  robot_model:=E05 robot_ip:=192.168.56.103 \
+  update_rate:=250
+```
+
+After connecting to port 8893, the driver verifies the actual `cycle_time`:
+1 ms accepts only 1000 Hz and 4 ms accepts only 250 Hz. A mismatch reports
+`Control frequency mismatch` and shuts down the complete launch. This parameter
+controls the controller_manager and 8892/8893 real-time loop, not GUI refresh.
+
 ### New GUI: GUI only
 
 If controller bringup and `elfin_sdk_node` are already running in another
@@ -49,6 +72,10 @@ terminal, start only the new GUI:
 ```bash
 ros2 launch elfin_basic_api elfin_gui_only.launch.py
 ```
+
+GUI-only mode does not start controller_manager and therefore has no
+`update_rate` argument. Its control frequency is determined by the controller
+bringup that is already running.
 
 The new script can also be run directly:
 
@@ -79,6 +106,11 @@ The legacy GUI depends on interfaces including `/joint_teleop`,
 `/write_do`, `/joint_states`, TF, and
 `elfin_arm_controller/follow_joint_trajectory`. The window can open without
 these backend nodes, but its controls and status will not work correctly.
+
+`elfin_basic_api.launch.py` is a historical backend-only entry point. It starts
+the legacy `elfin_basic_api_node` with model resources currently hard-coded for
+Elfin10; it does not start the driver, MoveIt, either GUI, or simulation and is
+not a replacement for the new complete GUI launch.
 
 ### Legacy fake GUI
 

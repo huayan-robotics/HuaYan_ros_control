@@ -29,7 +29,7 @@
 ## 2. 编译和环境
 
 ```bash
-cd ~/elfin_ros2_ws
+cd ~/workspace/HuaYan_ros_control
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install
 source install/setup.bash
@@ -81,8 +81,9 @@ elfin_robot_bringup/config/elfin_control.yaml
 | `config_file` | 包内`config/elfin_control.yaml` | 统一启动配置文件路径 |
 | `robot_model` | `E05` | 机器人型号（控制器 `typealias`） |
 | `hardware_type` | `gazebo` | `controller`、`gazebo`、`ethercat` 或 `fake` |
-| `robot_ip` | `10.20.200.3` | 真实控制器 IP |
+| `robot_ip` | `10.20.215.133` | 统一配置文件中的真实控制器 IP |
 | `control_mode` | `position` | `position`、`velocity` 或 `controller` |
+| `update_rate` | `1000` | ros2_control读/写频率；1 ms控制器填`1000`，4 ms控制器填`250` |
 | `servo_gain` | `8000` | 8892 `StartServo` 增益 |
 | `lookahead_time` | `0.004` | ServoJ 前瞻时间，单位秒 |
 | `servo_restart_idle_ms` | `100` | 位置命令停止变化达到该时间后，下一段轨迹重新调用 `StartServo` |
@@ -106,6 +107,7 @@ elfin_control:
   hardware_type: controller
   robot_ip: 10.20.215.133
   control_mode: position
+  update_rate: 1000
   enable_controller_validation: true
   servo_gain: 8000
   lookahead_time: 0.004
@@ -123,6 +125,46 @@ elfin_control:
 ```
 
 配置文件提供日常启动值；显式传入的同名launch参数可以作为单次覆盖。未知字段、空值或非法枚举会使launch直接报错，避免拼写错误被静默忽略。
+
+### 3.1 控制频率配置与校验
+
+`update_rate`必须与控制器版本的控制周期一致。普通版本的8893数据包中
+`cycle_time`为1 ms，使用1000 Hz；升级包名称带`4ms`的版本使用250 Hz：
+
+| 控制器周期/版本 | `update_rate` |
+|---|---:|
+| 1 ms（版本名称不带`4ms`） | `1000` Hz |
+| 4 ms（版本名称带`4ms`） | `250` Hz |
+
+日常使用只修改统一配置文件中的这一处：
+
+```yaml
+# elfin_robot_bringup/config/elfin_control.yaml
+elfin_control:
+  update_rate: 1000   # 1 ms版本
+```
+
+4 ms版本改为：
+
+```yaml
+elfin_control:
+  update_rate: 250
+```
+
+同一参数会同时传给`controller_manager.update_rate`和硬件插件的周期校验，
+不需要修改`elfin_controller_position.yaml`、`elfin_controller_velocity.yaml`或
+`elfin_controller_state_only.yaml`。如只想对一次启动临时覆盖，可使用：
+
+```bash
+ros2 launch elfin_robot_bringup elfin_control.launch.py \
+  update_rate:=250
+```
+
+硬件插件连接8893后读取首个有效包中的`cycle_time`并进行一致性检查：1 ms只接受
+1000 Hz，4 ms只接受250 Hz。配置不匹配、周期值未知或参数不是250/1000时，
+驱动会输出`Control frequency mismatch`或`Unsupported 8893 cycle_time`并拒绝激活，
+不会以错误频率继续运行。该检查直接使用控制器实时数据，不依赖
+`enable_controller_validation`，因此关闭机型/版本校验也不会跳过频率校验。
 
 如需保留多套配置，可以复制YAML并只指定配置文件：
 
@@ -177,7 +219,7 @@ Elfin controller model/version validation is disabled
 `elfin_basic_api` 同时保留原有 GUI 和新版控制器 GUI。编译后先加载当前工作区：
 
 ```bash
-cd ~/elfin_ros2_ws
+cd ~/workspace/HuaYan_ros_control
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ```
@@ -197,6 +239,18 @@ ros2 launch elfin_basic_api elfin_gui_new.launch.py \
 `/elfin_sdk/*` topic/service 与 `elfin_sdk_node` 通信，不直接连接控制器端口。
 完整启动默认使用 `hardware_type:=controller`、`control_mode:=controller`，并开启
 机型和版本校验。
+
+该GUI完整入口与统一bringup使用同一个控制频率配置。默认读取
+`elfin_robot_bringup/config/elfin_control.yaml`中的`update_rate`，也可临时覆盖：
+
+```bash
+ros2 launch elfin_basic_api elfin_gui_new.launch.py \
+  robot_model:=E05 robot_ip:=192.168.56.103 \
+  update_rate:=250
+```
+
+1 ms控制器使用1000 Hz，4 ms控制器使用250 Hz；不匹配时硬件拒绝激活并结束
+完整启动。GUI-only入口不启动controller_manager，因此不接受`update_rate`。
 
 #### 新版 GUI：只启动界面
 
@@ -247,6 +301,10 @@ ros2 launch elfin_basic_api fake_elfin_gui.launch.py
 它启动原有 `elfin_gui.py`，并设置 `use_fake_robot:=true`、
 `use_sim_time:=true`。它不会自动启动 Gazebo、MoveIt、旧 Basic API 或 IO 服务，
 这些依赖仍需按原仿真流程提前启动。
+
+`elfin_basic_api.launch.py`是另一个历史入口，只启动旧
+`elfin_basic_api_node`，并且当前模型资源硬编码为Elfin10。它不启动驱动、MoveIt、
+GUI或仿真，不应作为新版GUI或统一机器人启动入口。
 
 新旧文件对应关系如下：
 

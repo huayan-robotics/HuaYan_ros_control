@@ -14,6 +14,7 @@ constexpr std::size_t kJointCount = 6;
 
 struct RobotState
 {
+  std::int32_t cycle_time_ms{0};
   std::array<double, kJointCount> target_position{};
   std::array<double, kJointCount> target_velocity{};
   std::array<double, kJointCount> actual_position{};

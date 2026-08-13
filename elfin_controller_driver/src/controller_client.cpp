@@ -119,7 +119,7 @@ StateClient::ReceiveResult StateClient::receive(RobotState & state, std::string 
   const auto magic = read_le<std::uint32_t>(cursor);
   const auto message_size = read_le<std::int32_t>(cursor);
   const auto data_size = read_le<std::int32_t>(cursor);
-  (void)read_le<std::int32_t>(cursor);
+  state.cycle_time_ms = read_le<std::int32_t>(cursor);
   if (magic != kMagic || message_size != static_cast<std::int32_t>(kFrameSize) || data_size != 1120) {
     std::ostringstream details;
     details << "invalid 8893 frame header: magic=0x" << std::hex << magic << std::dec

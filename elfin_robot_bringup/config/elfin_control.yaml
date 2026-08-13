@@ -5,6 +5,7 @@ elfin_control:
   hardware_type: controller       # controller, gazebo, or ethercat
   robot_ip: 10.20.215.133
   control_mode: position           # position, velocity, or controller
+  update_rate: 1000                # 1 ms controller: 1000; 4 ms controller: 250
 
   # Controller identity/version preflight (requires model match and >= 6.5.20d).
   enable_controller_validation: false

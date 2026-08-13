@@ -38,6 +38,27 @@ ros2 launch elfin_basic_api elfin_gui_new.launch.py \
   robot_model:=E05 robot_ip:=192.168.56.103
 ```
 
+完整GUI启动会读取统一配置文件
+`elfin_robot_bringup/config/elfin_control.yaml`中的`update_rate`。普通1 ms控制器使用
+1000 Hz；升级包名称带`4ms`的控制器使用250 Hz。日常使用只需修改这一处：
+
+```yaml
+elfin_control:
+  update_rate: 1000   # 1 ms版本；4 ms版本改为250
+```
+
+也可以只对本次GUI启动临时覆盖：
+
+```bash
+ros2 launch elfin_basic_api elfin_gui_new.launch.py \
+  robot_model:=E05 robot_ip:=192.168.56.103 \
+  update_rate:=250
+```
+
+驱动连接8893后会读取实际`cycle_time`：1 ms只接受1000 Hz，4 ms只接受250 Hz；
+配置错误时会显示`Control frequency mismatch`并自动结束整个启动。该参数控制的是
+controller_manager及8892/8893实时控制循环，不是GUI刷新频率。
+
 ### 新版 GUI：只启动界面
 
 如果控制器 bringup 和 `elfin_sdk_node` 已经在其他终端运行，只启动新版 GUI：
@@ -45,6 +66,9 @@ ros2 launch elfin_basic_api elfin_gui_new.launch.py \
 ```bash
 ros2 launch elfin_basic_api elfin_gui_only.launch.py
 ```
+
+GUI-only模式不启动controller_manager，因此没有`update_rate`参数；控制频率由已经运行的
+控制器bringup决定。
 
 也可以直接运行新版脚本：
 
@@ -72,6 +96,9 @@ ros2 run elfin_basic_api elfin_gui.py
 `/home_teleop`、`/read_di`、`/read_do`、`/write_do`、`/joint_states`、TF 和
 `elfin_arm_controller/follow_joint_trajectory` 等旧接口。只运行 GUI 而未启动这些
 后台节点时，窗口可以出现，但按钮和状态不会正常工作。
+
+`elfin_basic_api.launch.py`是历史后台入口，只启动模型资源硬编码为Elfin10的旧
+`elfin_basic_api_node`；它不会启动驱动、MoveIt、GUI或仿真，不能替代新版完整启动。
 
 ### 原有 fake GUI
 

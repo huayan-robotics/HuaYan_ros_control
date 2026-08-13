@@ -27,6 +27,7 @@
 
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
   <exec_depend>elfin_robot_bringup</exec_depend>
   <exec_depend>python3-wxgtk4.0</exec_depend>
 

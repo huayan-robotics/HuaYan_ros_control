@@ -80,13 +80,23 @@ Examples:
 
 ```bash
 ros2 launch elfin_robot_bringup elfin_controller.launch.py \
-  robot_model:=E05 robot_ip:=10.20.200.3 control_mode:=controller
+  robot_model:=E05 robot_ip:=10.20.200.3 control_mode:=controller \
+  update_rate:=1000
 
 ros2 service call /elfin_sdk/set_enabled std_srvs/srv/SetBool '{data: true}'
 ros2 service call /elfin_sdk/set_freedrive std_srvs/srv/SetBool '{data: true}'
 ros2 service call /elfin_sdk/set_freedrive std_srvs/srv/SetBool '{data: false}'
 ros2 service call /elfin_sdk/set_ros_control std_srvs/srv/SetBool '{data: true}'
 ```
+
+`update_rate` follows the controller cycle: use `1000` for a 1 ms controller
+and `250` for a controller version marked `4ms`. The direct
+`elfin_controller.launch.py` entry defaults to 1000 Hz and accepts a one-shot
+override. For normal use, prefer `elfin_control.launch.py` and change only
+`elfin_control.update_rate` in
+`elfin_robot_bringup/config/elfin_control.yaml`. The hardware reads the actual
+8893 `cycle_time` during activation and aborts the complete launch when it does
+not match the configured rate.
 
 The position/velocity motion controller is initially loaded inactive. If the
 first 10004 status frame reports enabled, unpaused, fault-free, and all joint

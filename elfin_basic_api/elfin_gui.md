@@ -225,11 +225,19 @@ ros2 launch elfin_basic_api elfin_gui_new.launch.py \
   robot_model:=E05 robot_ip:=192.168.56.103
 ```
 
+该入口会从`elfin_robot_bringup/config/elfin_control.yaml`读取统一的
+`update_rate`。1 ms控制器使用1000 Hz，4 ms控制器使用250 Hz；也可用
+`update_rate:=250`或`update_rate:=1000`仅覆盖本次启动。驱动会将该值同时用于
+controller_manager和8893周期校验，配置与实际`cycle_time`不一致时中止整个启动。
+
 后台驱动和 `elfin_sdk_node` 已运行时只启动新版界面：
 
 ```bash
 ros2 launch elfin_basic_api elfin_gui_only.launch.py
 ```
+
+GUI-only入口不启动controller_manager，因此不接受`update_rate`；频率由已经运行的
+bringup决定。
 
 启动原有 GUI：
 
@@ -244,6 +252,8 @@ ros2 launch elfin_basic_api fake_elfin_gui.launch.py
 ```
 
 旧 launch 只启动旧 GUI，仍需按原功能包流程启动其 Basic API、MoveIt、TF、轨迹控制器和 IO 服务。
+`elfin_basic_api.launch.py`也是历史入口，只启动硬编码为Elfin10模型的旧
+`elfin_basic_api_node`，不是新版GUI或完整机器人bringup入口。
 
 ## 8. 关键源码位置
 
