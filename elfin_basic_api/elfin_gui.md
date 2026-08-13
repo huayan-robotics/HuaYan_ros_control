@@ -258,22 +258,3 @@ ros2 launch elfin_basic_api fake_elfin_gui.launch.py
 | `elfin_controller_driver/include/elfin_controller_driver/rt_info_client.hpp` | 10004 状态接收接口 |
 | `elfin_robot_msgs/msg/` | GUI 使用的状态消息 |
 | `elfin_robot_msgs/srv/` | GUI 使用的自定义服务 |
-
-## 9. 已知边界
-
-- Stop 是软件安全停止，不是物理急停，不能作为人员安全措施。
-- Free Drive 能否开启取决于控制器模式；力控 Free Drive 是另一个接口。
-- CloseBrake 的 RobotBraking 前置状态由控制器定义，GUI 不尝试绕过。
-- 所有写操作仍受控制器状态机、安全配置和版本限制。
-- 8892 未监听或被其他客户端占用时，ROS Control 不能取得控制权，但 10003/10004 SDK 功能可能仍正常。
-
-## 10. 上传前检查
-
-```bash
-cd ~/workspace/HuaYan_ros_control
-git status --short
-git diff --check
-colcon build --symlink-install
-```
-
-不要提交 `build/`、`install/` 和 `log/`。
