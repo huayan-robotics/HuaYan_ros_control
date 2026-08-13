@@ -10,6 +10,7 @@ bool paused
 bool emergency_stop
 bool safeguard_stop
 bool electrified
+bool controller_started
 bool controller_connected
 bool blending_done
 bool in_position

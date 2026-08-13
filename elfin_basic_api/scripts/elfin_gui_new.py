@@ -44,6 +44,7 @@ LIGHT_BLUE = wx.Colour(219, 238, 255)
 PALE_BLUE = wx.Colour(237, 247, 255)
 RED = wx.Colour(238, 63, 69)
 GREEN = wx.Colour(46, 160, 67)
+ORANGE = wx.Colour(237, 139, 35)
 YELLOW = wx.Colour(255, 211, 57)
 GREY = wx.Colour(202, 207, 213)
 WHITE = wx.Colour(255, 255, 255)
@@ -66,6 +67,11 @@ class GuiRosBridge(Node):
         self.end_io_callback = end_io_callback
         self.brake_client = self.create_client(SetBrake, "/elfin_sdk/set_brake")
         self.enable_client = self.create_client(SetBool, "/elfin_sdk/set_enabled")
+        self.electrify_client = self.create_client(Trigger, "/elfin_sdk/electrify")
+        self.initialize_controller_client = self.create_client(
+            Trigger, "/elfin_sdk/initialize_controller"
+        )
+        self.blackout_client = self.create_client(Trigger, "/elfin_sdk/blackout")
         self.reset_client = self.create_client(Trigger, "/elfin_sdk/reset")
         self.stop_client = self.create_client(Trigger, "/elfin_sdk/stop")
         self.freedrive_client = self.create_client(SetBool, "/elfin_sdk/set_freedrive")
@@ -159,6 +165,21 @@ class GuiRosBridge(Node):
         request = SetBool.Request()
         request.data = enabled
         self._request(self.enable_client, request, "Servo", callback)
+
+    def electrify(self, callback):
+        self._request(self.electrify_client, Trigger.Request(), "Power On", callback, 35000)
+
+    def initialize_controller(self, callback):
+        self._request(
+            self.initialize_controller_client,
+            Trigger.Request(),
+            "Initialize Controller",
+            callback,
+            35000,
+        )
+
+    def blackout(self, callback):
+        self._request(self.blackout_client, Trigger.Request(), "Power Off", callback, 10000)
 
     def reset(self, callback):
         self._request(self.reset_client, Trigger.Request(), "Clear Fault", callback)
@@ -293,6 +314,9 @@ class HeaderBar(wx.Panel):
         self.SetBackgroundColour(WHITE)
         grid = wx.FlexGridSizer(1, 8, 2, 2)
         # Model, IP, ROS, SDK, servo, fault, error code, stop.
+        # Keep the header compact while reserving enough room for a full error
+        # code.  Extra width is distributed mainly to IP and Error Code.
+        column_widths = (120, 160, 140, 135, 115, 90, 175, 80)
         for column, proportion in enumerate((1, 2, 1, 1, 1, 1, 2, 1)):
             grid.AddGrowableCol(column, proportion)
         self.cells = {}
@@ -302,11 +326,11 @@ class HeaderBar(wx.Panel):
             ("ip", f"IP: {robot_ip}", BLUE),
             ("ros", "ROS Inactivated", BLUE),
             ("sdk", "SDK Connected", BLUE),
-            ("servo", "Servo Off", BLUE),
+            ("servo", "Power Off", RED),
             ("fault", "No Fault", GREEN),
             ("error", "Error Code: 0", GREEN),
         )
-        for key, label, colour in values:
+        for column, (key, label, colour) in enumerate(values):
             # Keep the colour on a fixed-size panel.  On GTK a StaticText can
             # shrink to its new label after SetLabel(), exposing white space.
             cell = wx.Panel(self)
@@ -316,26 +340,46 @@ class HeaderBar(wx.Panel):
             text.SetForegroundColour(WHITE)
             text.SetBackgroundColour(colour)
             font = text.GetFont()
-            font.SetPointSize(11)
+            font.SetPointSize(10)
             font.SetWeight(wx.FONTWEIGHT_BOLD)
             text.SetFont(font)
             cell_sizer.AddStretchSpacer()
             cell_sizer.Add(text, 0, wx.ALIGN_CENTER | wx.LEFT | wx.RIGHT, 3)
             cell_sizer.AddStretchSpacer()
             cell.SetSizer(cell_sizer)
+            cell.SetMinSize((column_widths[column], 50))
             grid.Add(cell, 1, wx.EXPAND)
             self.cells[key] = text
             self.cell_panels[key] = cell
+        for window in (self.cell_panels["servo"], self.cells["servo"]):
+            window.SetCursor(wx.Cursor(wx.CURSOR_HAND))
+            window.Bind(
+                wx.EVT_LEFT_UP,
+                lambda _event: self.GetTopLevelParent().show_robot_startup_dialog(),
+            )
         self.stop = make_button(self, "STOP", colour=RED)
         self.stop.SetForegroundColour(WHITE)
+        self.stop.SetMinSize((column_widths[-1], 50))
         self.stop.Bind(wx.EVT_BUTTON, lambda _event: self.GetTopLevelParent().emergency_stop())
         grid.Add(self.stop, 1, wx.EXPAND)
         self.SetSizer(grid)
-        self.SetMinSize((-1, 68))
+        self.SetMinSize((-1, 50))
 
-    def set_servo(self, enabled):
-        self.cells["servo"].SetLabel("Servo On" if enabled else "Servo Off")
-        self._set_cell_colour("servo", GREEN if enabled else BLUE)
+    def set_robot_state(self, connected, electrified, initialized, enabled):
+        if not connected or not electrified:
+            label, colour = "Power Off", RED
+        elif not initialized:
+            label, colour = "Not Initialized", RED
+        elif not enabled:
+            label, colour = "Servo Off", ORANGE
+        else:
+            label, colour = "Servo On", GREEN
+        self.cells["servo"].SetLabel(label)
+        self._set_cell_colour("servo", colour)
+
+    def set_robot_transition(self, label):
+        self.cells["servo"].SetLabel(label)
+        self._set_cell_colour("servo", RED)
 
     def set_fault(self, faulted):
         self.cells["fault"].SetLabel("Fault" if faulted else "No Fault")
@@ -1139,6 +1183,115 @@ class PayloadPage(FormPage):
         self.frame.read_payload()
 
 
+class RobotStartupDialog(wx.Dialog):
+    STEPS = ("Power On", "Initialize Controller", "Servo Off", "Servo On")
+
+    def __init__(self, parent):
+        super().__init__(parent, title="Robot Startup", size=(920, 390))
+        self.frame = parent
+        self.command_pending = False
+        panel = wx.Panel(self)
+        root = wx.BoxSizer(wx.VERTICAL)
+        title = wx.StaticText(panel, label="Robot State Setup", style=wx.ALIGN_CENTER)
+        title_font = title.GetFont()
+        title_font.SetPointSize(17)
+        title_font.SetWeight(wx.FONTWEIGHT_BOLD)
+        title.SetFont(title_font)
+        root.Add(title, 0, wx.ALIGN_CENTER | wx.TOP, 32)
+
+        steps = wx.BoxSizer(wx.HORIZONTAL)
+        self.step_markers = []
+        self.step_labels = []
+        for index, name in enumerate(self.STEPS):
+            column = wx.BoxSizer(wx.VERTICAL)
+            marker = wx.StaticText(panel, label=str(index + 1), size=(34, 34), style=wx.ALIGN_CENTER)
+            marker.SetForegroundColour(WHITE)
+            marker.SetBackgroundColour(GREY)
+            marker_font = marker.GetFont()
+            marker_font.SetPointSize(12)
+            marker_font.SetWeight(wx.FONTWEIGHT_BOLD)
+            marker.SetFont(marker_font)
+            label = wx.StaticText(panel, label=name, style=wx.ALIGN_CENTER)
+            column.Add(marker, 0, wx.ALIGN_CENTER | wx.BOTTOM, 8)
+            column.Add(label, 0, wx.ALIGN_CENTER)
+            steps.Add(column, 1, wx.EXPAND)
+            self.step_markers.append(marker)
+            self.step_labels.append(label)
+        root.Add(steps, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 55)
+        root.AddStretchSpacer()
+
+        actions = wx.BoxSizer(wx.HORIZONTAL)
+        actions.AddStretchSpacer()
+        self.primary = make_button(panel, "Power On", self.on_primary, GREEN, (210, 48))
+        self.primary.SetForegroundColour(WHITE)
+        actions.Add(self.primary, 0, wx.RIGHT, 25)
+        self.power_off = make_button(panel, "Power Off", self.on_power_off, RED, (180, 48))
+        self.power_off.SetForegroundColour(WHITE)
+        actions.Add(self.power_off, 0)
+        actions.AddStretchSpacer()
+        root.Add(actions, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 42)
+        panel.SetSizer(root)
+        self.Bind(wx.EVT_CLOSE, self.on_close)
+
+    def on_close(self, event):
+        self.Hide()
+        # This dialog is reused when the header state is clicked.  Consume the
+        # close event after hiding it; vetoing after Hide() can make some wx/GTK
+        # window managers immediately restore the dialog.
+        event.Skip(False)
+
+    def on_primary(self, _event):
+        if not self.frame.electrified:
+            self.frame.request_robot_power_action("power_on")
+        elif not self.frame.controller_started:
+            self.frame.request_robot_power_action("initialize")
+        elif not self.frame.servo_enabled:
+            self.frame.set_servo(True)
+        else:
+            self.frame.set_servo(False)
+
+    def on_power_off(self, _event):
+        self.frame.request_robot_power_action("power_off")
+
+    def set_pending(self, label):
+        self.command_pending = True
+        self.primary.SetLabel(label)
+        self.primary.Enable(False)
+        self.power_off.Enable(False)
+
+    def update_state(self, connected, electrified, initialized, enabled, moving):
+        powered = connected and electrified
+        controller_ready = powered and initialized
+        servo_on = controller_ready and enabled
+        completed = (powered, controller_ready, controller_ready, servo_on)
+        for done, marker, label in zip(completed, self.step_markers, self.step_labels):
+            colour = GREEN if done else GREY
+            marker.SetBackgroundColour(colour)
+            label.SetForegroundColour(colour if done else BLACK)
+            marker.Refresh()
+        if self.command_pending:
+            return
+        if not connected:
+            self.primary.SetLabel("Waiting for SDK")
+            self.primary.Enable(False)
+        elif not electrified:
+            self.primary.SetLabel("Power On")
+            self.primary.Enable(True)
+        elif not initialized:
+            self.primary.SetLabel("Initialize Controller")
+            self.primary.Enable(True)
+        elif not enabled:
+            self.primary.SetLabel("Servo On")
+            self.primary.Enable(True)
+        else:
+            self.primary.SetLabel("Servo Off")
+            self.primary.Enable(True)
+        self.power_off.Enable(connected and electrified)
+
+    def finish_pending(self):
+        self.command_pending = False
+
+
 class ElfinGuiFrame(wx.Frame):
     PAGE_ORDER = {
         "main": 0,
@@ -1150,10 +1303,15 @@ class ElfinGuiFrame(wx.Frame):
     }
 
     def __init__(self):
-        style = (wx.DEFAULT_FRAME_STYLE | wx.RESIZE_BORDER | wx.MINIMIZE_BOX |
-                 wx.MAXIMIZE_BOX | wx.CLOSE_BOX)
-        super().__init__(None, title="Elfin Robot Control", size=(1182, 820), style=style)
-        self.SetMinSize((980, 720))
+        # Operator panel uses one verified layout.  Resizing previously allowed
+        # the header columns to become too narrow and hide the controller error
+        # code, so deliberately omit RESIZE_BORDER and MAXIMIZE_BOX.
+        style = (wx.CAPTION | wx.SYSTEM_MENU | wx.MINIMIZE_BOX |
+                 wx.CLOSE_BOX | wx.CLIP_CHILDREN)
+        fixed_size = (1182, 820)
+        super().__init__(None, title="Elfin Robot Control", size=fixed_size, style=style)
+        self.SetMinSize(fixed_size)
+        self.SetMaxSize(fixed_size)
         self.ros_bridge = GuiRosBridge(
             self.on_robot_status,
             self.on_brake_status,
@@ -1194,6 +1352,9 @@ class ElfinGuiFrame(wx.Frame):
         self.robot_moving = False
         self.robot_faulted = False
         self.sdk_connected = False
+        self.electrified = False
+        self.controller_started = False
+        self.robot_startup_dialog = RobotStartupDialog(self)
         self.active_jog = None
         self.jog_keepalive = None
         self.jog_request_pending = False
@@ -1203,6 +1364,7 @@ class ElfinGuiFrame(wx.Frame):
         self.target_generation = 0
         self.target_motion_seen = False
         self.error_dialogs = set()
+        self.notice_dialogs = set()
         self.last_status_time = None
         self.ros_executor = MultiThreadedExecutor(num_threads=2)
         self.ros_executor.add_node(self.ros_bridge)
@@ -1213,6 +1375,19 @@ class ElfinGuiFrame(wx.Frame):
         self.state_watchdog.Start(250)
         self.Bind(wx.EVT_CLOSE, self.on_close)
         self.Centre()
+        wx.CallAfter(self.show_robot_startup_dialog)
+
+    def show_robot_startup_dialog(self):
+        self.robot_startup_dialog.update_state(
+            self.sdk_connected,
+            self.electrified,
+            self.controller_started,
+            self.servo_enabled,
+            self.robot_moving,
+        )
+        self.robot_startup_dialog.CentreOnParent()
+        self.robot_startup_dialog.Show()
+        self.robot_startup_dialog.Raise()
 
     def set_status(self, message):
         # Communication feedback will be designed separately.  The interface
@@ -1250,11 +1425,25 @@ class ElfinGuiFrame(wx.Frame):
         self.servo_enabled = message.enabled
         self.robot_moving = message.moving
         self.robot_faulted = message.error
-        self.header.set_servo(message.enabled)
+        self.electrified = message.electrified
+        self.controller_started = message.controller_started
+        self.header.set_robot_state(
+            message.sdk_connected,
+            message.electrified,
+            message.controller_started,
+            message.enabled,
+        )
         self.header.set_fault(message.error)
         self.header.set_error_code(message.error_code)
         self.header.set_sdk_connected(message.sdk_connected)
         self.header.set_ros_control(message.ros_control_active)
+        self.robot_startup_dialog.update_state(
+            message.sdk_connected,
+            message.electrified,
+            message.controller_started,
+            message.enabled,
+            message.moving,
+        )
         if message.emergency_stop or message.safeguard_stop:
             self.header.show_stop_result("E-STOP ACTIVE")
         elif self.header.stop.GetLabel() == "E-STOP ACTIVE":
@@ -1275,8 +1464,12 @@ class ElfinGuiFrame(wx.Frame):
         self.last_status_time = None
         self.robot_status_received = False
         self.sdk_connected = False
+        self.electrified = False
+        self.controller_started = False
         self.header.set_sdk_connected(False)
         self.header.set_ros_control(False)
+        self.header.set_robot_state(False, False, False, False)
+        self.robot_startup_dialog.update_state(False, False, False, False, False)
         self.cancel_motion_keepalives()
         self.tcp_page.set_write_allowed(False)
         self.safety_page.set_write_allowed(False)
@@ -1334,6 +1527,27 @@ class ElfinGuiFrame(wx.Frame):
         dialog.Bind(wx.EVT_CLOSE, close_dialog)
         dialog.Show()
 
+    def show_timed_notice(self, message, title="Servo", duration_ms=2000):
+        """Show a non-modal result notice and remove it automatically."""
+        dialog = wx.MessageDialog(
+            self,
+            message,
+            title,
+            wx.OK | wx.ICON_INFORMATION,
+        )
+        self.notice_dialogs.add(dialog)
+
+        def close_dialog(_event=None):
+            if dialog not in self.notice_dialogs:
+                return
+            self.notice_dialogs.discard(dialog)
+            dialog.Destroy()
+
+        dialog.Bind(wx.EVT_BUTTON, close_dialog, id=wx.ID_OK)
+        dialog.Bind(wx.EVT_CLOSE, close_dialog)
+        dialog.Show()
+        wx.CallLater(duration_ms, close_dialog)
+
     def command_result(self, operation, success, detail, _response=None):
         if not success:
             self.show_service_error(operation, detail)
@@ -1359,6 +1573,7 @@ class ElfinGuiFrame(wx.Frame):
         self.show_service_error(f"Axis{axis + 1} {operation}", detail)
 
     def set_servo(self, enabled):
+        self.robot_startup_dialog.set_pending("Enabling..." if enabled else "Disabling...")
         self.ros_bridge.set_enabled(
             enabled,
             lambda success, detail, response: self.on_servo_result(
@@ -1368,14 +1583,68 @@ class ElfinGuiFrame(wx.Frame):
 
     def on_servo_result(self, enabled, success, detail, _response):
         operation = "Servo On" if enabled else "Servo Off"
+        self.robot_startup_dialog.finish_pending()
         if not success:
+            self.header.set_robot_state(
+                self.sdk_connected, self.electrified,
+                self.controller_started, self.servo_enabled
+            )
+            self.robot_startup_dialog.update_state(
+                self.sdk_connected, self.electrified, self.controller_started,
+                self.servo_enabled, self.robot_moving
+            )
             self.show_service_error(operation, detail)
             return
-        wx.MessageBox(
-            f"{operation} succeeded.",
-            "Servo",
-            wx.OK | wx.ICON_INFORMATION,
-            parent=self,
+        self.show_timed_notice(f"{operation} succeeded.")
+        self.robot_startup_dialog.update_state(
+            self.sdk_connected, self.electrified, self.controller_started,
+            enabled, self.robot_moving
+        )
+
+    def request_robot_power_action(self, action):
+        if action == "power_on":
+            self.header.set_robot_transition("Powering On")
+            self.robot_startup_dialog.set_pending("Powering On...")
+            self.ros_bridge.electrify(
+                lambda success, detail, response: self.on_robot_power_result(
+                    "Power On", success, detail, response
+                )
+            )
+        elif action == "initialize":
+            self.header.set_robot_transition("Initializing")
+            self.robot_startup_dialog.set_pending("Initializing...")
+            self.ros_bridge.initialize_controller(
+                lambda success, detail, response: self.on_robot_power_result(
+                    "Initialize Controller", success, detail, response
+                )
+            )
+        elif action == "power_off":
+            self.header.set_robot_transition("Powering Off")
+            self.robot_startup_dialog.set_pending("Powering Off...")
+            self.ros_bridge.blackout(
+                lambda success, detail, response: self.on_robot_power_result(
+                    "Power Off", success, detail, response
+                )
+            )
+
+    def on_robot_power_result(self, operation, success, detail, _response):
+        self.robot_startup_dialog.finish_pending()
+        if not success:
+            self.header.set_robot_state(
+                self.sdk_connected, self.electrified,
+                self.controller_started, self.servo_enabled
+            )
+            self.robot_startup_dialog.update_state(
+                self.sdk_connected, self.electrified, self.controller_started,
+                self.servo_enabled, self.robot_moving
+            )
+            self.show_service_error(operation, detail)
+            return
+        # Services wait for their asynchronous controller transitions.  The
+        # next robot_status sample remains the authority for displayed state.
+        self.robot_startup_dialog.update_state(
+            self.sdk_connected, self.electrified, self.controller_started,
+            self.servo_enabled, self.robot_moving
         )
 
     def clear_fault(self):

@@ -79,6 +79,110 @@ public:
           response->message += "; wait for enabled-ready state, then call set_ros_control(true)";
         }
       }, rmw_qos_profile_services_default, service_group_);
+    electrify_service_ = create_service<std_srvs::srv::Trigger>("~/electrify",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+        std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+        int code = HRIF_Electrify(box_id_);
+        if (code == 0) {
+          // Electrify is asynchronous.  State 7 is RobotBlackout and state 8
+          // is RobotElectrifying; Connect2Controller is rejected in both.
+          for (int attempt = 0; attempt < 300; ++attempt) {
+            refresh_power_state();
+            if (robot_electrified_ && controller_fsm_state_ != 7 &&
+              controller_fsm_state_ != 8) {break;}
+            std::this_thread::sleep_for(100ms);
+          }
+          if (!robot_electrified_ || controller_fsm_state_ == 7 ||
+            controller_fsm_state_ == 8)
+          {
+            response->success = false;
+            response->message = "timed out waiting for Power On transition";
+            return;
+          }
+          refresh_power_state();
+        }
+        set_response(code, response);
+      }, rmw_qos_profile_services_default, service_group_);
+    initialize_controller_service_ = create_service<std_srvs::srv::Trigger>(
+      "~/initialize_controller",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+        std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+        if (!robot_electrified_) {
+          response->success = false; response->message = "robot must be powered on first"; return;
+        }
+        if (robot_enabled_) {
+          response->success = false; response->message = "robot must be disabled"; return;
+        }
+        int code = HRIF_Connect2Controller(box_id_);
+        if (code == 0) {
+          int started = 0;
+          for (int attempt = 0; attempt < 300; ++attempt) {
+            const int read_code = HRIF_IsControllerStarted(box_id_, started);
+            if (read_code == 0 && started != 0) {break;}
+            std::this_thread::sleep_for(100ms);
+          }
+          if (started == 0) {
+            response->success = false;
+            response->message = "timed out waiting for controller initialization";
+            return;
+          }
+          controller_started_ = true;
+          refresh_power_state();
+        }
+        set_response(code, response);
+      }, rmw_qos_profile_services_default, service_group_);
+    blackout_service_ = create_service<std_srvs::srv::Trigger>("~/blackout",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+        std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+        if (ros_control_active_) {
+          std::lock_guard<std::mutex> lock(mode_mutex_);
+          if (!switch_motion_controller(false)) {
+            response->success = false;
+            response->message = "could not stop ROS motion controller before power off";
+            return;
+          }
+          ros_control_active_ = false;
+        }
+        if (robot_enabled_ || controller_fsm_state_ != 24) {
+          // State 28 means a previous disable request is already in flight.
+          if (controller_fsm_state_ != 28) {
+            const int disable_code = HRIF_GrpDisable(box_id_, robot_id_);
+            if (disable_code != 0) {
+              set_response(disable_code, response);
+              return;
+            }
+          }
+          // HR6.5.22a rejects Blackout while the FSM is still RobotStandBy.
+          // enabled becomes false before RobotDisabling reaches RobotDisable,
+          // so both the flag and FSM state must be checked.
+          for (int attempt = 0; attempt < 50 &&
+            (robot_enabled_ || controller_fsm_state_ != 24); ++attempt)
+          {
+            std::this_thread::sleep_for(100ms);
+          }
+          if (robot_enabled_ || controller_fsm_state_ != 24) {
+            response->success = false;
+            response->message = "timed out waiting for Servo Off before Power Off";
+            return;
+          }
+        }
+        const int code = HRIF_Blackout(box_id_);
+        if (code == 0) {
+          // Blackout also returns before the FSM finishes RobotBlackingOut
+          // (state 6).  Do not let the GUI offer Power On until state 7.
+          for (int attempt = 0; attempt < 300; ++attempt) {
+            refresh_power_state();
+            if (!robot_electrified_ && controller_fsm_state_ == 7) {break;}
+            std::this_thread::sleep_for(100ms);
+          }
+          if (robot_electrified_ || controller_fsm_state_ != 7) {
+            response->success = false;
+            response->message = "timed out waiting for Power Off transition";
+            return;
+          }
+        }
+        set_response(code, response);
+      }, rmw_qos_profile_services_default, service_group_);
     ros_control_service_ = create_service<std_srvs::srv::SetBool>("~/set_ros_control",
       [this](const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
         std::shared_ptr<std_srvs::srv::SetBool::Response> response) {
@@ -443,6 +547,7 @@ public:
   {
     if (HRIF_IsConnected(box_id_)) {
       sdk_connected_ = true;
+      refresh_power_state();
       return;
     }
     const bool was_connected = sdk_connected_.exchange(false);
@@ -467,6 +572,24 @@ public:
         "SDK reconnect to %s:%d failed with code %d",
         robot_ip_.c_str(), sdk_port_, code);
     }
+  }
+
+  void refresh_power_state()
+  {
+    int moving = 0, enabled = 0, error = 0, error_code = 0, error_axis = 0;
+    int braking = 0, paused = 0, emergency_stop = 0, safeguard = 0;
+    int electrified = 0, connected_to_box = 0, blending_done = 0, in_position = 0;
+    const int state_code = HRIF_ReadRobotState(
+      box_id_, robot_id_, moving, enabled, error, error_code, error_axis,
+      braking, paused, emergency_stop, safeguard, electrified,
+      connected_to_box, blending_done, in_position);
+    if (state_code == 0) {
+      robot_electrified_ = electrified != 0;
+      controller_box_connected_ = connected_to_box != 0;
+    }
+    int started = 0;
+    const int started_code = HRIF_IsControllerStarted(box_id_, started);
+    if (started_code == 0) {controller_started_ = started != 0;}
   }
 
 private:
@@ -692,7 +815,9 @@ private:
     message.header.stamp = now();
     message.sdk_connected = sdk_connected_;
     message.moving = info.moving != 0;
-    message.enabled = info.enabled != 0;
+    // HR6.5.22a can leave robotEnabled=1 in the 10004 frame after Blackout.
+    // Treat it as valid only while the power and controller prerequisites hold.
+    message.enabled = robot_electrified_ && controller_started_ && info.enabled != 0;
     message.error_code = info.error_code != 0 ? info.error_code : info.axis_group_error;
     message.error_axis = info.error_axis;
     message.error = message.error_code != 0 ||
@@ -707,8 +832,9 @@ private:
     // software safety-guard E-stop requested through this SDK node.
     message.emergency_stop = soft_estop_active_;
     message.safeguard_stop = soft_estop_active_;
-    message.electrified = false;
-    message.controller_connected = true;
+    message.electrified = robot_electrified_;
+    message.controller_started = controller_started_;
+    message.controller_connected = controller_box_connected_;
     message.blending_done = info.blending_done != 0;
     message.in_position = info.in_position != 0;
     {
@@ -732,7 +858,8 @@ private:
   }
   void update_robot_readiness(const elfin_controller_driver::RtInfo & info)
   {
-    const bool enabled = info.enabled != 0;
+    controller_fsm_state_ = info.controller_state;
+    const bool enabled = robot_electrified_ && controller_started_ && info.enabled != 0;
     robot_moving_ = info.moving != 0;
     const bool error = info.error_code != 0 || info.axis_group_error != 0 ||
       std::any_of(info.axis_error.begin(), info.axis_error.end(), [](int value) {return value != 0;});
@@ -942,6 +1069,8 @@ private:
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr enable_service_, ros_control_service_,
     freedrive_service_, force_freedrive_service_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stop_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr electrify_service_,
+    initialize_controller_service_, blackout_service_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_service_, pause_service_,
     continue_service_;
   rclcpp::Service<elfin_robot_msgs::srv::SetFloat64>::SharedPtr override_service_, speed_ratio_service_;
@@ -971,6 +1100,10 @@ private:
   std::atomic<bool> state_received_{false};
   std::atomic<bool> robot_enabled_{false};
   std::atomic<bool> robot_moving_{false};
+  std::atomic<bool> robot_electrified_{false};
+  std::atomic<bool> controller_started_{false};
+  std::atomic<bool> controller_box_connected_{false};
+  std::atomic<int> controller_fsm_state_{0};
   std::atomic<bool> soft_estop_active_{false};
   std::atomic<bool> robot_error_{false};
   std::atomic<bool> robot_paused_{false};

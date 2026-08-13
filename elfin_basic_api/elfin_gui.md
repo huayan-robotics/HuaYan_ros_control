@@ -57,6 +57,9 @@ GUI 不直接连接控制器端口。它只通过 ROS 2 与 `elfin_sdk_node` 通
 | Service | 类型 | SDK/内部实现 | GUI 功能 |
 |---|---|---|---|
 | `/elfin_sdk/set_enabled` | `std_srvs/SetBool` | `HRIF_GrpEnable` / `HRIF_GrpDisable` | Servo On/Off |
+| `/elfin_sdk/electrify` | `std_srvs/Trigger` | `HRIF_Electrify` | Power On |
+| `/elfin_sdk/initialize_controller` | `std_srvs/Trigger` | `HRIF_Connect2Controller` | Initialize Controller |
+| `/elfin_sdk/blackout` | `std_srvs/Trigger` | `HRIF_Blackout` | Power Off |
 | `/elfin_sdk/reset` | `std_srvs/Trigger` | `HRIF_GrpReset`，必要时退出软件安全停止 | Clear Fault |
 | `/elfin_sdk/stop` | `std_srvs/Trigger` | 停止当前 SDK 运动并调用安全防护停止 | Stop |
 | `/elfin_sdk/set_freedrive` | `std_srvs/SetBool` | `HRIF_GrpOpenFreeDriver` / `HRIF_GrpCloseFreeDriver` | 普通 Free Drive |
@@ -90,6 +93,12 @@ SDK 节点还保留 Pause、Continue、Force Free Drive 等接口，但当前 GU
 - 保存新 TCP 后，笛卡尔目标和 Z 轴对齐使用节点记录的活动 TCP 名称，不再硬编码 `TCP`。
 
 ## 5. 各功能实现
+
+### 5.0 Robot Startup
+
+GUI启动时自动打开英文 `Robot Startup` 弹窗；点击顶部综合机器人状态也可再次打开。状态来自SDK真实反馈：`HRIF_ReadRobotState`提供上电状态，`HRIF_IsControllerStarted`提供初始化状态，10004提供使能状态。主按钮按当前状态显示 `Power On`、`Initialize Controller`、`Servo On`或`Servo Off`。`Power Off`可在使能状态直接调用且不做二次确认；驱动内部会先退出ROS Control、执行Servo Off并等待控制器进入`RobotDisable`，然后才调用`HRIF_Blackout`。普通GUI不暴露会关闭整个控制器操作系统的`HRIF_ShutdownRobot`。
+
+顶部状态颜色为：`Power Off`和`Not Initialized`红色，`Servo Off`橙色，`Servo On`绿色。
 
 ### 5.1 顶部状态栏
 

@@ -9,6 +9,9 @@ The SDK node exposes:
 
 ```text
 /elfin_sdk/set_enabled      std_srvs/srv/SetBool
+/elfin_sdk/electrify        std_srvs/srv/Trigger
+/elfin_sdk/initialize_controller std_srvs/srv/Trigger
+/elfin_sdk/blackout         std_srvs/srv/Trigger
 /elfin_sdk/set_ros_control  std_srvs/srv/SetBool
 /elfin_sdk/set_freedrive    std_srvs/srv/SetBool
 /elfin_sdk/set_force_freedrive std_srvs/srv/SetBool
