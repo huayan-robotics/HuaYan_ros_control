@@ -107,7 +107,7 @@ install(
 )
 
 install(
-  FILES README.md README_cn.md elfin_gui.md
+  FILES elfin_basic_api.md
   DESTINATION share/${PROJECT_NAME}
 )
 
