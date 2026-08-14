@@ -39,8 +39,6 @@ CONFIG_KEYS = {
     "pushed_state_disconnect_timeout_ms",
     "status_publish_rate",
     "io_publish_rate",
-    "loop_diagnostics",
-    "loop_diagnostics_period",
     "update_rate",
 }
 
@@ -123,8 +121,6 @@ def _configure(context):
                     "pushed_state_disconnect_timeout_ms": LaunchConfiguration("pushed_state_disconnect_timeout_ms"),
                     "status_publish_rate": LaunchConfiguration("status_publish_rate"),
                     "io_publish_rate": LaunchConfiguration("io_publish_rate"),
-                    "loop_diagnostics": LaunchConfiguration("loop_diagnostics"),
-                    "loop_diagnostics_period": LaunchConfiguration("loop_diagnostics_period"),
                     "update_rate": LaunchConfiguration("update_rate"),
                 }.items(),
             ),
@@ -202,8 +198,6 @@ def generate_launch_description():
             DeclareLaunchArgument("pushed_state_disconnect_timeout_ms", default_value="1000"),
             DeclareLaunchArgument("status_publish_rate", default_value="10.0"),
             DeclareLaunchArgument("io_publish_rate", default_value="5.0"),
-            DeclareLaunchArgument("loop_diagnostics", default_value="false"),
-            DeclareLaunchArgument("loop_diagnostics_period", default_value="5.0"),
             DeclareLaunchArgument("update_rate", default_value="1000"),
             OpaqueFunction(function=_configure),
         ]

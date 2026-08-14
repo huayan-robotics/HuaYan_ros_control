@@ -29,7 +29,7 @@
 ## 2. 编译和环境
 
 ```bash
-cd ~/workspace/HuaYan_ros_control
+cd ~/elfin_ros2_ws
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install
 source install/setup.bash
@@ -81,7 +81,7 @@ elfin_robot_bringup/config/elfin_control.yaml
 | `config_file` | 包内`config/elfin_control.yaml` | 统一启动配置文件路径 |
 | `robot_model` | `E05` | 机器人型号（控制器 `typealias`） |
 | `hardware_type` | `gazebo` | `controller`、`gazebo`、`ethercat` 或 `fake` |
-| `robot_ip` | `10.20.215.133` | 统一配置文件中的真实控制器 IP |
+| `robot_ip` | `10.20.200.3` | 真实控制器 IP |
 | `control_mode` | `position` | `position`、`velocity` 或 `controller` |
 | `update_rate` | `1000` | ros2_control读/写频率；1 ms控制器填`1000`，4 ms控制器填`250` |
 | `servo_gain` | `8000` | 8892 `StartServo` 增益 |
@@ -219,7 +219,7 @@ Elfin controller model/version validation is disabled
 `elfin_basic_api` 同时保留原有 GUI 和新版控制器 GUI。编译后先加载当前工作区：
 
 ```bash
-cd ~/workspace/HuaYan_ros_control
+cd ~/elfin_ros2_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ```

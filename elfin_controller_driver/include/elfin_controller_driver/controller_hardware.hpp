@@ -5,7 +5,6 @@
 
 #include <atomic>
 #include <chrono>
-#include <cstdint>
 #include <memory>
 #include <string>
 #include <thread>
@@ -60,7 +59,6 @@ private:
     const std::vector<double> & command, const std::vector<double> & baseline,
     double epsilon) const;
   void publish_realtime_state(const RobotState & state);
-  void record_loop_cycle(bool is_read);
   bool all_interfaces(const std::vector<std::string> & interfaces, const std::string & type) const;
   static double parameter_double(const hardware_interface::HardwareInfo &, const std::string &, double);
   static int parameter_int(const hardware_interface::HardwareInfo &, const std::string &, int);
@@ -102,15 +100,6 @@ private:
   std::chrono::steady_clock::time_point last_state_publish_{};
   rclcpp::Node::SharedPtr state_publisher_node_;
   rclcpp::Clock command_log_clock_{RCL_STEADY_TIME};
-  bool loop_diagnostics_{false};
-  double loop_diagnostics_period_{5.0};
-  std::chrono::steady_clock::time_point diagnostics_window_start_{};
-  std::chrono::steady_clock::time_point last_read_call_{};
-  std::chrono::steady_clock::time_point last_write_call_{};
-  std::uint64_t read_call_count_{0};
-  std::uint64_t write_call_count_{0};
-  double max_read_period_ms_{0.0};
-  double max_write_period_ms_{0.0};
   rclcpp::Publisher<elfin_robot_msgs::msg::ElfinRealtimeState>::SharedPtr realtime_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_publisher_;
 };

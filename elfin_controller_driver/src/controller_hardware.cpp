@@ -66,15 +66,6 @@ CallbackReturn ElfinControllerHardware::on_init(const hardware_interface::Hardwa
     return CallbackReturn::ERROR;
   }
   state_publish_rate_ = parameter_double(info, "state_publish_rate", 100.0);
-  const auto diagnostics_value = parameter_string(info, "loop_diagnostics", "false");
-  loop_diagnostics_ = diagnostics_value == "true" || diagnostics_value == "1" ||
-    diagnostics_value == "yes" || diagnostics_value == "on";
-  loop_diagnostics_period_ = parameter_double(info, "loop_diagnostics_period", 5.0);
-  if (loop_diagnostics_period_ <= 0.0) {
-    RCLCPP_ERROR(rclcpp::get_logger("ElfinControllerHardware"),
-      "loop_diagnostics_period must be greater than zero");
-    return CallbackReturn::ERROR;
-  }
   unit_scale_ = parameter_string(info, "controller_joint_unit", "degree") == "radian" ? 1.0 : M_PI / 180.0;
   positions_.assign(kJointCount, std::nan("")); velocities_.assign(kJointCount, std::nan(""));
   efforts_.assign(kJointCount, std::nan("")); position_commands_.assign(kJointCount, std::nan(""));
@@ -264,44 +255,8 @@ CallbackReturn ElfinControllerHardware::on_error(const rclcpp_lifecycle::State &
   disconnect_clients();
   return CallbackReturn::SUCCESS;
 }
-void ElfinControllerHardware::record_loop_cycle(bool is_read)
-{
-  if (!loop_diagnostics_) {return;}
-  const auto now = std::chrono::steady_clock::now();
-  if (diagnostics_window_start_ == std::chrono::steady_clock::time_point{}) {
-    diagnostics_window_start_ = now;
-  }
-  auto & last_call = is_read ? last_read_call_ : last_write_call_;
-  auto & count = is_read ? read_call_count_ : write_call_count_;
-  auto & max_period_ms = is_read ? max_read_period_ms_ : max_write_period_ms_;
-  if (last_call != std::chrono::steady_clock::time_point{}) {
-    const double period_ms = std::chrono::duration<double, std::milli>(now - last_call).count();
-    max_period_ms = std::max(max_period_ms, period_ms);
-  }
-  last_call = now;
-  ++count;
-
-  // write() follows read() in the controller_manager loop, so report once at
-  // the end of a complete cycle instead of producing two independent logs.
-  const double elapsed = std::chrono::duration<double>(now - diagnostics_window_start_).count();
-  if (is_read || elapsed < loop_diagnostics_period_) {return;}
-  const double read_hz = read_call_count_ / elapsed;
-  const double write_hz = write_call_count_ / elapsed;
-  RCLCPP_INFO(rclcpp::get_logger("ElfinControllerHardware"),
-    "hardware loop diagnostics: window=%.3f s, read=%.2f Hz (avg=%.3f ms, max=%.3f ms), "
-    "write=%.2f Hz (avg=%.3f ms, max=%.3f ms)",
-    elapsed, read_hz, read_hz > 0.0 ? 1000.0 / read_hz : 0.0, max_read_period_ms_,
-    write_hz, write_hz > 0.0 ? 1000.0 / write_hz : 0.0, max_write_period_ms_);
-  diagnostics_window_start_ = now;
-  read_call_count_ = 0;
-  write_call_count_ = 0;
-  max_read_period_ms_ = 0.0;
-  max_write_period_ms_ = 0.0;
-}
-
 return_type ElfinControllerHardware::read(const rclcpp::Time &, const rclcpp::Duration &)
 {
-  record_loop_cycle(true);
   if (!have_state_) {return return_type::OK;}
   RobotState state;
   {std::lock_guard<std::mutex> lock(state_mutex_); state = latest_state_;}
@@ -387,7 +342,6 @@ bool ElfinControllerHardware::command_changed(
 }
 return_type ElfinControllerHardware::write(const rclcpp::Time &, const rclcpp::Duration &)
 {
-  record_loop_cycle(false);
   if (owner_ != Owner::ROS || !state_valid_ || active_mode_ == CommandMode::NONE) {return return_type::OK;}
   std::array<double, 6> command{};
   if (active_mode_ == CommandMode::POSITION) {

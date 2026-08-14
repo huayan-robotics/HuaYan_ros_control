@@ -73,8 +73,6 @@ def _launch(context):
             "<param name='velocity_command_epsilon'>", LaunchConfiguration("velocity_command_epsilon"), "</param>",
             "<param name='command_log_throttle_ms'>", LaunchConfiguration("command_log_throttle_ms"), "</param>",
             "<param name='servo_restart_idle_ms'>", LaunchConfiguration("servo_restart_idle_ms"), "</param>",
-            "<param name='loop_diagnostics'>", LaunchConfiguration("loop_diagnostics"), "</param>",
-            "<param name='loop_diagnostics_period'>", LaunchConfiguration("loop_diagnostics_period"), "</param>",
             "<param name='expected_update_rate'>", str(update_rate), "</param>",
             "</hardware>",
             "".join(
@@ -177,8 +175,6 @@ def generate_launch_description():
         DeclareLaunchArgument("velocity_command_epsilon", default_value="1e-8"),
         DeclareLaunchArgument("command_log_throttle_ms", default_value="100"),
         DeclareLaunchArgument("servo_restart_idle_ms", default_value="100"),
-        DeclareLaunchArgument("loop_diagnostics", default_value="false"),
-        DeclareLaunchArgument("loop_diagnostics_period", default_value="5.0"),
         DeclareLaunchArgument("update_rate", default_value="1000"),
         DeclareLaunchArgument("enable_controller_validation", default_value="true"),
         DeclareLaunchArgument("pushed_state_port", default_value="10004"),
