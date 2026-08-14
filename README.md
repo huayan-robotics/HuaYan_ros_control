@@ -1,137 +1,222 @@
-Elfin Robot
-======
+# Elfin Robot ROS 2
 
+[中文](README_cn.md) · [API Reference](docs/API_description.md) ·
+[Chinese Controller Driver Guide](docs/controller_driver_guide_cn.md)
 
-Chinese version of the README -> please [click here](./README_cn.md)
+This repository provides Elfin robot models, a controller-backed ROS 2 hardware
+interface, MoveIt, Gazebo, and operator interfaces for ROS 2 Humble.
 
-Controller-backed driver, MoveIt/Gazebo startup, services, and topics:
-[中文使用手册](./docs/controller_driver_guide_cn.md)
+## 1. Requirements and Build
 
+- Ubuntu 22.04
+- ROS 2 Humble
+- Supported models: `E03`, `E05`, `E05-L`, `E10`, `E10-L`, and `E15`
 
-<p align="center">
-  <img src="docs/images/elfin.png" />
-</p>
+Install dependencies:
 
-This repository provides ROS2 support for the Elfin Robot. The recommend operating environment is on Ubuntu 22.04 with ROS humble. So far These packages haven't been tested in other environment.
-
-### Installation
-
-#### Ubuntu 22.04 + ROS Humble
-
-**Install some important dependent software packages:**
-```sh
-$ sudo apt-get install ros-humble-joint-trajectory-controller
-$ sudo apt-get install ros-humble-controller-manager
-$ sudo apt-get install ros-humble-trajectory-msgs
-$ sudo apt-get install ros-humble-gazebo-ros2-control*
-$ sudo apt-get install ros-humble-joint-state-controller
-$ sudo apt-get install ros-humble-position-controllers
+```bash
+sudo apt update
+sudo apt install \
+  ros-humble-controller-manager \
+  ros-humble-ros2-control \
+  ros-humble-ros2-controllers \
+  ros-humble-joint-trajectory-controller \
+  ros-humble-gazebo-ros2-control \
+  ros-humble-moveit \
+  python3-wxgtk4.0
 ```
 
-**Install related software packages:**
-```sh
-$ sudo apt-get install build-essential libgtk-3-dev
-$ sudo pip3 install wxpython
-$ sudo pip3 install transforms3d
+Build and source the workspace:
+
+```bash
+cd ~/elfin_ros2_ws
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install
+source install/setup.bash
 ```
 
-**Install or upgrade MoveIt!.** 
+Verify the active package path:
 
-If you have installed MoveIt!, please make sure that it's been upgraded to the latest version.
-
-Install/Upgrade MoveIt!:
-
-```sh
-$ sudo apt-get update
-$ sudo apt-get install ros-humble-moveit
+```bash
+ros2 pkg prefix elfin_robot_bringup
 ```
 
+## 2. Unified Configuration
 
-**Install this repository from Source**
+The unified entry point is:
 
-First set up a catkin workspace (see [this tutorials](http://wiki.ros.org/catkin/Tutorials)).  
-Then clone the repository into the src/ folder. It should look like /path/to/your/catkin_workspace/src/elfin_robot.  
-Make sure to source the correct setup file according to your workspace hierarchy, then use catkin_make to compile.  
-
-Assuming your catkin workspace folder is ~/catkin_ws, you should use the following commands:
-```sh
-$ cd ~/catkin_ws/src
-$ git clone -b humble_ethercat https://github.com/huayan-robotics/elfin_robot_ros2.git
-$ cd ..
-$ colcon build
-$ source install/setup.bash
+```bash
+ros2 launch elfin_robot_bringup elfin_control.launch.py
 ```
 
+Operational parameters are stored in
+`elfin_robot_bringup/config/elfin_control.yaml`:
 
----
+```yaml
+elfin_control:
+  robot_model: E05
+  hardware_type: controller
+  robot_ip: 10.20.215.133
+  control_mode: position
+  update_rate: 1000
+  enable_controller_validation: false
 
-### Usage with Gazebo Simulation
+  servo_gain: 8000
+  lookahead_time: 0.004
+  servo_restart_idle_ms: 100
+  position_command_epsilon: 1.0e-8
+  velocity_command_epsilon: 1.0e-8
+  command_log_throttle_ms: 100
 
-***There are launch files available to bringup a simulated robot - either Elfin3, Elfin5 or Elfin10.  
-In the following the commands for Elfin3 are given. For Elfin5 or Elfin10, simply replace the prefix accordingly.***
-
-Bring up the simulated robot in Gazebo and Start up RViz with a configuration including the MoveIt!:
-```sh
-$ ros2 launch elfin3_ros2_moveit2 elfin3.launch.py
+  state_stale_timeout_ms: 100
+  state_disconnect_timeout_ms: 1000
+  pushed_state_port: 10004
+  pushed_state_socket_timeout_ms: 100
+  pushed_state_disconnect_timeout_ms: 1000
+  status_publish_rate: 10.0
+  io_publish_rate: 5.0
 ```
 
-Start up elfin basic api and "Elfin Control Panel" interface:
-```sh
-$ ros2 launch elfin3_ros2_moveit2 elfin3_basic_api.launch.py
+Configuration precedence is command-line override, YAML value, then launch
+fallback. A command-line override applies to the current launch only.
+
+## 3. Real Controller
+
+Verify network and port access before launch:
+
+```bash
+ping ROBOT_IP
+nc -vz ROBOT_IP 8892
+nc -vz ROBOT_IP 8893
+nc -vz ROBOT_IP 10003
+nc -vz ROBOT_IP 10004
 ```
 
-The controller-backed Elfin Control Panel is intended for an Elfin controller,
-not the legacy fake/MoveIt GUI simulation path.
+### 3.1 MoveIt Position Control
 
-> Tutorial about how to use MoveIt! RViz plugin: [docs/moveit_plugin_tutorial_english.md](docs/moveit_plugin_tutorial_english.md)  
-Tips:
-Every time you want to plan a trajectory, you should set the start state to current first.
-
-
----
-
-###  Usage with real Hardware
-
-***There are launch files available to bringup a real robot - either Elfin3, Elfin5 or Elfin10.  
-In the following the commands for Elfin3 are given. For Elfin5 or Elfin10, simply replace the prefix accordingly.***
-
-Put the file *elfin_drivers.yaml*, that you got from the vendor, into the folder elfin_robot_bringup/config/.Then copy the parameters in this file to the elfin_robot_bringup/config/elfin_arm_control.yaml
-
-Connect Elfin to the computer with a LAN cable. Then confirm the ethernet interface name of the connection with `ifconfig`. The default ethernet name is eth0. If the ethernet name is not eth0, you should correct the following line in the file *elfin_robot_bringup/config/elfin_arm_control.yaml* 
-
-```
-elfin_ethernet_name: eth0
+```bash
+ros2 launch elfin_robot_bringup elfin_control.launch.py \
+  robot_model:=E05 hardware_type:=controller control_mode:=position \
+  robot_ip:=192.168.56.103
 ```
 
-Bring up the hardware of Elfin. Before bringing up the hardware, you should setup Linux with PREEMPT_RT properly. There is a [tutorial](https://wiki.linuxfoundation.org/realtime/documentation/howto/applications/preemptrt_setup). There are two versions of elfin EtherCAT slaves. Please bring up the hardware accordingly.
+This mode starts controller communication, `ros2_control`, MoveIt, and RViz.
+MoveIt executes trajectories through
+`/elfin_arm_controller/follow_joint_trajectory`.
 
-```sh
-$ sudo chrt 10 bash
-$ ros2 launch elfin3_ros2_moveit2 elfin3_moveit.launch.py
+### 3.2 Controller Control and State Monitoring
+
+```bash
+ros2 launch elfin_robot_bringup elfin_control.launch.py \
+  robot_model:=E05 hardware_type:=controller control_mode:=controller \
+  robot_ip:=192.168.56.103
 ```
 
-Start up RViz with a configuration including the MoveIt! Motion Planning plugin:
-```sh
-$ sudo su
-$ ros2 launch elfin3_ros2_moveit2 elfin3_moveit_rviz.launch.py
-```
-Start up elfin basic api:
-```sh
-$ sudo su
-$ ros2 launch elfin3_ros2_moveit2 elfin3_basic_api.launch.py
-```
-Start up "Elfin Control Panel" interface:
-```sh
-$ sudo su
-$ ros2 launch elfin_basic_api elfin_gui_new.launch.py robot_model:=E05 robot_ip:=192.168.56.103
+This mode publishes live robot state while the ROS motion controller remains
+`inactive`. No motion command is transmitted on port 8892.
+
+### 3.3 Joint Velocity Control
+
+```bash
+ros2 launch elfin_robot_bringup elfin_control.launch.py \
+  robot_model:=E05 hardware_type:=controller control_mode:=velocity \
+  robot_ip:=192.168.56.103
 ```
 
-Enable the servos of Elfin with "Elfin Control Panel" interface: if there is no "Warning", just press the "Servo On" button to enable the robot. If there is "Warning", press the "Clear Fault" button first and then press the "Servo On" button.
+This mode transmits SpeedJ commands through `elfin_velocity_controller`.
+MoveIt trajectory execution uses `control_mode:=position`.
 
-Tutorial about how to use MoveIt! RViz plugin: [docs/moveit_plugin_tutorial_english.md](docs/moveit_plugin_tutorial_english.md)  
-Tips:
-Every time you want to plan a trajectory, you should set the start state to current first.
+## 4. GUI
 
-Before turning the robot off, you should press the "Servo Off" button to disable the robot.
+Start controller bringup, the SDK node, and the new GUI:
 
-For more information about API, see [docs/API_description_english.md](docs/API_description_english.md)
+```bash
+ros2 launch elfin_basic_api elfin_gui_new.launch.py \
+  robot_model:=E05 robot_ip:=192.168.56.103
+```
+
+Start only the new GUI when bringup and the SDK node are already running:
+
+```bash
+ros2 launch elfin_basic_api elfin_gui_only.launch.py \
+  robot_model:=E05 robot_ip:=192.168.56.103
+```
+
+Start the legacy real-robot GUI:
+
+```bash
+ros2 launch elfin_basic_api elfin_gui.launch.py
+```
+
+Start the legacy fake GUI:
+
+```bash
+ros2 launch elfin_basic_api fake_elfin_gui.launch.py
+```
+
+The legacy GUI launch files start the interface only. Start the legacy Basic
+API, MoveIt, TF, trajectory controller, and I/O services through the original
+workflow.
+
+## 5. Gazebo Simulation
+
+```bash
+ros2 launch elfin_robot_bringup elfin_control.launch.py \
+  robot_model:=E05 hardware_type:=gazebo
+```
+
+This mode starts Gazebo, `gazebo_ros2_control`, state broadcasting, the
+trajectory controller, MoveIt, and RViz. It does not connect to controller
+ports.
+
+The legacy EtherCAT entry point remains available:
+
+```bash
+ros2 launch elfin_robot_bringup elfin_control.launch.py \
+  robot_model:=E05 hardware_type:=ethercat
+```
+
+## 6. Launch Parameters
+
+| Parameter | Launch fallback | Description |
+|---|---:|---|
+| `config_file` | packaged YAML | Unified configuration file |
+| `robot_model` | `E05` | Controller model alias |
+| `hardware_type` | `gazebo` | `controller`, `gazebo`, `ethercat`, or `fake` |
+| `robot_ip` | `10.20.200.3` | Controller IP address |
+| `control_mode` | `position` | `position`, `velocity`, or `controller` |
+| `update_rate` | `1000` | 1000 for 1 ms; 250 for 4 ms |
+| `enable_controller_validation` | `true` | Validate model and minimum version |
+| `servo_gain` | `8000` | Port 8892 StartServo gain |
+| `lookahead_time` | `0.004` | ServoJ lookahead in seconds |
+| `servo_restart_idle_ms` | `100` | Servo stream idle threshold in ms |
+| `state_stale_timeout_ms` | `100` | Port 8893 stale-state threshold in ms |
+| `state_disconnect_timeout_ms` | `1000` | Port 8893 reconnect threshold in ms |
+| `pushed_state_port` | `10004` | JSON state stream port |
+| `status_publish_rate` | `10.0` | Robot status rate in Hz |
+| `io_publish_rate` | `5.0` | I/O state rate in Hz |
+
+The complete launch parameter table is provided in the
+[controller driver guide](docs/controller_driver_guide_cn.md).
+
+## 7. Model, Version, and Cycle Requirements
+
+`robot_model` uses the controller `typealias`: `E03`, `E05`, `E05-L`, `E10`,
+`E10-L`, or `E15`.
+
+With controller validation enabled:
+
+- the controller model shall match `robot_model`;
+- the minimum controller version is `6.5.20d`;
+- model, version, or SDK read validation failure prevents `ros2_control` startup.
+
+The control rate shall match the `cycle_time` field in port 8893 data:
+
+| Controller cycle | `update_rate` |
+|---|---:|
+| 1 ms | 1000 Hz |
+| 4 ms | 250 Hz |
+
+A cycle mismatch prevents hardware activation. Services, topics, units, and
+communication paths are documented in the
+[API reference](docs/API_description.md).

@@ -107,7 +107,9 @@ install(
 )
 
 install(
-  FILES elfin_basic_api.md
+  FILES
+    ${CMAKE_CURRENT_SOURCE_DIR}/../docs/API_description.md
+    ${CMAKE_CURRENT_SOURCE_DIR}/../docs/API_description_cn.md
   DESTINATION share/${PROJECT_NAME}
 )
 

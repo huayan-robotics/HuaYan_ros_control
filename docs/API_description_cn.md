@@ -1,8 +1,10 @@
-# Elfin Basic API 接口说明
+# Elfin ROS 2 API 接口说明
 
-本文档是新版控制器SDK节点和GUI的权威接口说明。驱动编译、真机与Gazebo启动、启动
+[English](API_description.md)
+
+本文档是控制器SDK节点和GUI的接口说明。驱动编译、真机与Gazebo启动、启动
 参数和版本限制见
-[`controller_driver_guide_cn.md`](../docs/controller_driver_guide_cn.md)。
+[`controller_driver_guide_cn.md`](controller_driver_guide_cn.md)。
 
 ## 1. 通信架构
 
@@ -38,20 +40,31 @@ ROS回调使用 `wx.CallAfter()` 更新界面，服务调用全部使用 `call_a
 - `LongJogL` 的axis 0～5对应X、Y、Z、RX、RY、RZ。
 - 默认TCP名称约定为 `TCP`，用户坐标系为 `Base`。
 
-自定义服务统一返回 `success` 和 `message`。HRIF失败时 `message` 保留控制器错误码和
-错误文本；应用不能只把TCP socket写入成功当成动作已经执行成功。
-
 ## 3. 状态话题
 
 ### 3.1 `/joint_states`
 
 类型：`sensor_msgs/msg/JointState`。由 `joint_state_broadcaster` 发布，是MoveIt、RViz和
-TF使用的主要关节状态，位置和速度单位为rad、rad/s。
+TF使用的标准关节状态，位置和速度单位为rad、rad/s。数据来源仍是8893：硬件插件先将
+解析结果写入 `ros2_control` 状态接口，再由 `joint_state_broadcaster` 发布。正常ROS
+应用应订阅该话题。
 
 ### 3.2 `/elfin_sdk/joint_states`
 
-类型：`sensor_msgs/msg/JointState`。由硬件插件直接根据8893发布，便于检查控制器原始
-关节反馈经过单位转换后的结果。
+类型同样为 `sensor_msgs/msg/JointState`，因为它表达的仍是关节名称、位置、速度和
+力矩。该话题由硬件插件直接根据8893解析结果发布，用于绕过
+`joint_state_broadcaster` 检查底层解析和单位转换，不作为MoveIt、RViz或TF的主要输入。
+
+两个话题来自同一份8893反馈，正常情况下数值应一致，区别仅在发布路径和用途：
+
+```text
+8893
+  ├── ros2_control状态接口 → joint_state_broadcaster → /joint_states（标准应用）
+  └── ElfinControllerHardware直接发布 → /elfin_sdk/joint_states（底层诊断）
+```
+
+需要查看8893中超出标准关节状态的TCP、力、目标值和控制器状态时，应使用
+`/elfin_sdk/realtime_state`，而不是 `/elfin_sdk/joint_states`。
 
 ### 3.3 `/elfin_sdk/realtime_state`
 
@@ -127,8 +140,6 @@ TF使用的主要关节状态，位置和速度单位为rad、rad/s。
 | `/elfin_sdk/set_enabled` | `std_srvs/srv/SetBool` | `HRIF_GrpEnable/GrpDisable`；去使能前停止ROS控制 |
 | `/elfin_sdk/blackout` | `std_srvs/srv/Trigger` | 停止ROS控制、去使能并等待Disable后调用 `HRIF_Blackout` |
 
-这些调用可能异步改变控制器FSM；服务会等待关键状态转换，最终界面状态仍以
-`robot_status`反馈为准。普通GUI不提供关闭控制器操作系统的接口。
 
 ### 4.2 运动状态与控制权
 
@@ -201,8 +212,7 @@ Blackout、安全光幕或其他FSM切换。
 - `box_co`：`HRIF_SetBoxCO`；
 - `end_do`：`HRIF_SetEndDO`。
 
-DI、CI和EndDI只能读取；DO、CO和EndDO可写。写请求成功后仍应等待10004状态回读确认，
-不能用GUI本地按钮颜色代替控制器反馈。新版GUI不显示AI/AO，但服务和状态字段保留。
+DI、CI和EndDI只能读取；DO、CO和EndDO可写。写请求成功后仍应等待10004状态回读确认。
 
 ### 4.7 Jog与目标运动
 
@@ -227,8 +237,7 @@ DI、CI和EndDI只能读取；DO、CO和EndDO可写。写请求成功后仍应�
 - `action=0/1/2`：STOP/START/KEEPALIVE；
 - `hold_required`：要求按住运行。
 
-笛卡尔目标由控制器 `HRIF_WayPoint` 求解和执行，绕过MoveIt碰撞规划；它不等于
-“控制器求逆解后再交给MoveIt规划”。
+笛卡尔目标由控制器 `HRIF_WayPoint` 求解和执行，绕过MoveIt碰撞规划。
 
 ## 5. 长按运动与watchdog
 
@@ -240,8 +249,7 @@ DI、CI和EndDI只能读取；DO、CO和EndDO可写。写请求成功后仍应�
 ```
 
 GUI和SDK节点各有一层终止保护。每次只允许一个活动运动；开始新操作会先结束旧操作。
-状态流失联、窗口失焦或鼠标释放事件都会结束keepalive。watchdog是软件保护，不能替代
-控制器安全功能和物理急停。
+状态流失联、窗口失焦或鼠标释放事件都会结束keepalive。
 
 ## 6. GUI功能与接口对应
 
@@ -262,7 +270,6 @@ GUI和SDK节点各有一层终止保护。每次只允许一个活动运动；�
 | Brake | `set_brake` + `brake_state` |
 | Set I/O | `set_digital_io` + IO状态话题 |
 
-状态栏始终以话题反馈为准，而不是以服务返回或按钮点击次数推测控制器状态。
 
 ## 7. ros2_control与MoveIt链路
 
@@ -306,9 +313,6 @@ Gazebo中由 `gazebo_ros2_control` 替代8892/8893硬件层，其余MoveIt和状
 4. 目标停止变化达到 `servo_restart_idle_ms` 后结束本段Servo流；
 5. 下一段轨迹再次从 `StartServo` 开始。
 
-速度模式同样使用变化检测：初始零速度和未变化值不重复发送；非零速度变为零时发送一次
-零速度。当前 `SpeedJ` 字段顺序必须与对应控制器固件协议一致，真机使用前应验证。
-
 ### 7.4 ROS控制权和就绪条件
 
 真实运动控制器先加载为 `inactive`。启动时只有首帧10004状态满足以下条件才自动激活：
@@ -316,7 +320,7 @@ Gazebo中由 `gazebo_ros2_control` 替代8892/8893硬件层，其余MoveIt和状
 - 已收到有效状态；
 - 机器人已使能、无故障、未暂停；
 - 六轴制动均已释放；
-- 普通freedrive和力控freedrive均未开启。
+- freedrive未开启。
 
 如果启动时未就绪，之后Servo On不会自动取得ROS控制权，必须显式调用
 `set_ros_control(true)`。去使能、故障、暂停、制动或10004状态流丢失会自动停用运动
@@ -360,7 +364,7 @@ JSON错误、接收超时和自动重连。
 5. 确认 `elfin_arm_controller` 为 `active`；
 6. 再执行MoveIt轨迹。
 
-### 9.2 普通freedrive
+### 9.2 freedrive
 
 1. 调用 `set_freedrive(true)`，驱动先停止ROS运动控制器；
 2. 8893、`/joint_states`、TF和RViz继续更新；
@@ -406,8 +410,8 @@ elfin_arm_controller     inactive
 
 | 文件 | 内容 |
 |---|---|
-| `scripts/elfin_gui_new.py` | 新版GUI、ROS bridge和按钮状态机 |
-| `scripts/elfin_gui.py` | 原有GUI |
+| `../elfin_basic_api/scripts/elfin_gui_new.py` | 新版GUI、ROS bridge和按钮状态机 |
+| `../elfin_basic_api/scripts/elfin_gui.py` | 原有GUI |
 | `../elfin_controller_driver/src/sdk_node.cpp` | 服务、话题、HRIF调用和watchdog |
 | `../elfin_controller_driver/src/controller_hardware.cpp` | 8892/8893 ros2_control硬件接口 |
 | `../elfin_controller_driver/src/rt_info_client.cpp` | 10004帧和JSON解析 |

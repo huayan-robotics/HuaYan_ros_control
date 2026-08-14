@@ -1,8 +1,8 @@
 # Elfin ROS 2 控制器驱动使用手册
 
 本文档说明工作空间编译、真实控制器与仿真启动、启动参数和控制器版本限制。
-SDK 服务、状态话题、GUI 功能及通信实现统一见
-[`elfin_basic_api.md`](../elfin_basic_api/elfin_basic_api.md)。
+SDK服务、状态话题、GUI功能及通信实现统一见
+[`API_description_cn.md`](API_description_cn.md)。
 
 ## 1. 环境与编译
 
@@ -219,8 +219,8 @@ ros2 launch elfin_robot_bringup elfin_control.launch.py \
 | `status_publish_rate` | `10.0` | 机器人状态话题频率，Hz |
 | `io_publish_rate` | `5.0` | IO状态话题频率，Hz |
 
-表中是launch回退值。实际启动优先级为：命令行覆盖 > YAML > launch回退值。仓库当前
-统一YAML中的IP、硬件类型和校验开关可能与回退值不同，应以实际 `config_file` 为准。
+表中是launch回退值。实际启动优先级为：命令行覆盖 > YAML > launch回退值。IP、
+硬件类型和校验开关以当前启动所使用的 `config_file` 为准。
 
 ## 6. 机型、版本与周期限制
 
