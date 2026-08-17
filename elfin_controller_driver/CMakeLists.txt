@@ -29,17 +29,17 @@ ament_target_dependencies(elfin_controller_hardware
 add_executable(elfin_sdk_node src/sdk_node.cpp src/rt_info_client.cpp)
 target_include_directories(elfin_sdk_node PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
-  ${CMAKE_CURRENT_SOURCE_DIR}/../sdk/include)
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include)
 target_link_libraries(elfin_sdk_node
-  ${CMAKE_CURRENT_SOURCE_DIR}/../sdk/Linux/libHR_Pro.so
+  ${CMAKE_CURRENT_SOURCE_DIR}/../lib/libHR_Pro.so
   JsonCpp::JsonCpp)
 ament_target_dependencies(elfin_sdk_node
   controller_manager_msgs elfin_robot_msgs rclcpp sensor_msgs std_srvs)
 
 add_executable(elfin_sdk_preflight src/sdk_preflight.cpp)
 target_include_directories(elfin_sdk_preflight PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/../sdk/include)
-target_link_libraries(elfin_sdk_preflight ${CMAKE_CURRENT_SOURCE_DIR}/../sdk/Linux/libHR_Pro.so)
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+target_link_libraries(elfin_sdk_preflight ${CMAKE_CURRENT_SOURCE_DIR}/../lib/libHR_Pro.so)
 ament_target_dependencies(elfin_sdk_preflight rclcpp)
 
 pluginlib_export_plugin_description_file(hardware_interface elfin_controller_hardware.xml)
@@ -47,7 +47,8 @@ install(TARGETS elfin_controller_hardware
   ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
 install(TARGETS elfin_sdk_node DESTINATION lib/${PROJECT_NAME})
 install(TARGETS elfin_sdk_preflight DESTINATION lib/${PROJECT_NAME})
-install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../sdk/Linux/libHR_Pro.so DESTINATION lib)
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../lib/libHR_Pro.so DESTINATION lib)
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../include/HR_Pro.h DESTINATION include)
 install(DIRECTORY include/ DESTINATION include)
 install(FILES elfin_controller_hardware.xml DESTINATION share/${PROJECT_NAME})
 install(FILES README.md DESTINATION share/${PROJECT_NAME})
