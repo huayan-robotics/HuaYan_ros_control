@@ -207,8 +207,13 @@ The complete launch parameter table is provided in the
 With controller validation enabled:
 
 - the controller model shall match `robot_model`;
-- the minimum controller version is `6.5.20d`;
+- the final `HR...` product-version field in the raw `ReadVersion`
+  response shall be at least `6.5.20d`;
 - model, version, or SDK read validation failure prevents `ros2_control` startup.
+
+The seven-number SDK value such as `20260724.31340.0.8228.1315.107.0`
+describes internal component versions and is logged for diagnostics only. It is
+not used for the product-version comparison.
 
 The control rate shall match the `cycle_time` field in port 8893 data:
 

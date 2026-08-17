@@ -230,7 +230,8 @@ ros2 launch elfin_robot_bringup elfin_control.launch.py \
 开启 `enable_controller_validation` 后，启动前通过SDK 10003：
 
 1. 读取控制器机型并与 `robot_model` 比较；比较忽略大小写、下划线和连字符；
-2. 读取控制器版本，最低要求为 `6.5.20d`；
+2. 发送原始 `ReadVersion,<robot_id>,;`，读取响应最后的 `HR...`产品版本，
+   最低要求为 `6.5.20d`；SDK提供的七段内部组件版本只用于诊断；
 3. 机型不匹配、版本过低、版本无法解析或SDK读取失败时不启动 `ros2_control`。
 
 临时关闭校验：

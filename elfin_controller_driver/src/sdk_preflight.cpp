@@ -1,8 +1,15 @@
 #include <algorithm>
+#include <arpa/inet.h>
 #include <cctype>
+#include <cerrno>
+#include <cstring>
+#include <iterator>
 #include <regex>
 #include <string>
+#include <sys/socket.h>
+#include <sys/time.h>
 #include <tuple>
+#include <unistd.h>
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -19,12 +26,78 @@ std::string normalize_model(const std::string & value)
   return result;
 }
 
+bool read_product_version(
+  const std::string & host, int port, unsigned int robot_id,
+  std::string & product_version, std::string & error)
+{
+  const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (fd < 0) {
+    error = std::string("socket failed: ") + std::strerror(errno);
+    return false;
+  }
+  const timeval timeout{2, 0};
+  (void)::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+  (void)::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+
+  sockaddr_in address{};
+  address.sin_family = AF_INET;
+  address.sin_port = htons(static_cast<uint16_t>(port));
+  if (::inet_pton(AF_INET, host.c_str(), &address.sin_addr) != 1 ||
+    ::connect(fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0)
+  {
+    error = std::string("connect failed: ") + std::strerror(errno);
+    ::close(fd);
+    return false;
+  }
+
+  const std::string request = "ReadVersion," + std::to_string(robot_id) + ",;";
+  std::size_t sent = 0;
+  while (sent < request.size()) {
+    const ssize_t count = ::send(fd, request.data() + sent, request.size() - sent, 0);
+    if (count <= 0) {
+      error = std::string("send failed: ") + std::strerror(errno);
+      ::close(fd);
+      return false;
+    }
+    sent += static_cast<std::size_t>(count);
+  }
+
+  std::string response;
+  char buffer[1024];
+  while (response.size() < 16384 && response.find(",;") == std::string::npos) {
+    const ssize_t count = ::recv(fd, buffer, sizeof(buffer), 0);
+    if (count <= 0) {break;}
+    response.append(buffer, static_cast<std::size_t>(count));
+  }
+  ::close(fd);
+
+  std::string compact_response;
+  std::copy_if(response.begin(), response.end(), std::back_inserter(compact_response),
+    [](const unsigned char c) {return !std::isspace(c);});
+  if (compact_response.rfind("ReadVersion,OK,", 0) != 0) {
+    error = "unexpected response: '" + response + "'";
+    return false;
+  }
+  const std::regex product_expression(R"((?:^|,)(HR[^,;]+)(?:,|;))",
+    std::regex::icase);
+  std::smatch match;
+  if (!std::regex_search(compact_response, match, product_expression)) {
+    error = "product version field is missing from response: '" + response + "'";
+    return false;
+  }
+  product_version = match[1].str();
+  return true;
+}
+
 bool parse_version(
   const std::string & text, int & major, int & minor, int & patch, int & revision)
 {
   std::smatch match;
-  const std::regex expression(R"((\d+)\.(\d+)\.(\d+)([A-Za-z]?))");
-  if (!std::regex_search(text, match, expression)) {return false;}
+  // Accept only the prefixed product-version field, never the internal build tuple.
+  const std::regex expression(
+    R"(^HR(\d+)\.(\d+)\.?([0-9]+)([A-Za-z]?)[0-9]*(?:[._].*)?$)",
+    std::regex::icase);
+  if (!std::regex_match(text, match, expression)) {return false;}
   major = std::stoi(match[1].str());
   minor = std::stoi(match[2].str());
   patch = std::stoi(match[3].str());
@@ -66,22 +139,34 @@ int main(int argc, char ** argv)
     HRIF_DisConnect(box_id); rclcpp::shutdown(); return 3;
   }
 
-  std::string version;
+  std::string internal_version;
   int cps_version = 0, codesys_version = 0, box_major = 0, box_mid = 0, box_min = 0;
   int algorithm_version = 0, firmware_version = 0;
   const int version_code = HRIF_ReadVersion(
-    box_id, robot_id, version, cps_version, codesys_version,
+    box_id, robot_id, internal_version, cps_version, codesys_version,
     box_major, box_mid, box_min, algorithm_version, firmware_version);
   if (version_code != 0) {
     RCLCPP_ERROR(node->get_logger(), "Preflight failed: HRIF_ReadVersion returned %d", version_code);
     HRIF_DisConnect(box_id); rclcpp::shutdown(); return 4;
+  }
+  HRIF_DisConnect(box_id);
+
+  std::string version;
+  std::string raw_version_error;
+  if (!read_product_version(
+      robot_ip, sdk_port, robot_id, version, raw_version_error))
+  {
+    RCLCPP_ERROR(node->get_logger(),
+      "Preflight failed: cannot read controller product version: %s",
+      raw_version_error.c_str());
+    rclcpp::shutdown(); return 5;
   }
 
   int major = 0, minor = 0, patch = 0, revision = 0;
   if (!parse_version(version, major, minor, patch, revision)) {
     RCLCPP_ERROR(node->get_logger(),
       "Preflight failed: cannot parse controller version string '%s'", version.c_str());
-    HRIF_DisConnect(box_id); rclcpp::shutdown(); return 5;
+    rclcpp::shutdown(); return 5;
   }
   const auto actual = std::make_tuple(major, minor, patch, revision);
   const auto minimum = std::make_tuple(6, 5, 20, 4);  // 6.5.20d
@@ -89,13 +174,13 @@ int main(int argc, char ** argv)
     RCLCPP_ERROR(node->get_logger(),
       "Preflight failed: controller version '%s' is older than required version 6.5.20d",
       version.c_str());
-    HRIF_DisConnect(box_id); rclcpp::shutdown(); return 6;
+    rclcpp::shutdown(); return 6;
   }
 
   RCLCPP_INFO(node->get_logger(),
-    "Preflight passed: model='%s', version='%s' (required >= 6.5.20d)",
-    actual_model.c_str(), version.c_str());
-  HRIF_DisConnect(box_id);
+    "Preflight passed: model='%s', version='%s' (required >= 6.5.20d), "
+    "internal_version='%s'",
+    actual_model.c_str(), version.c_str(), internal_version.c_str());
   rclcpp::shutdown();
   return 0;
 }
