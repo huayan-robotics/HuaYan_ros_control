@@ -1,6 +1,6 @@
 # Elfin Robot ROS 2
 
-[中文](README_cn.md) · [API Reference](docs/API_description.md) ·
+[中文](README_cn.md) · [New API Reference](docs/API_description_new.md) ·
 [Chinese Controller Driver Guide](docs/controller_driver_guide_cn.md)
 
 This repository provides Elfin robot models, a controller-backed ROS 2 hardware
@@ -115,17 +115,6 @@ ros2 launch elfin_robot_bringup elfin_control.launch.py \
 This mode publishes live robot state while the ROS motion controller remains
 `inactive`. No motion command is transmitted on port 8892.
 
-### 3.3 Joint Velocity Control
-
-```bash
-ros2 launch elfin_robot_bringup elfin_control.launch.py \
-  robot_model:=E05 hardware_type:=controller control_mode:=velocity \
-  robot_ip:=192.168.56.103
-```
-
-This mode transmits SpeedJ commands through `elfin_velocity_controller`.
-MoveIt trajectory execution uses `control_mode:=position`.
-
 ## 4. GUI
 
 Start controller bringup, the SDK node, and the new GUI:
@@ -184,7 +173,7 @@ ros2 launch elfin_robot_bringup elfin_control.launch.py \
 | `robot_model` | `E05` | Controller model alias |
 | `hardware_type` | `gazebo` | `controller`, `gazebo`, `ethercat`, or `fake` |
 | `robot_ip` | `10.20.200.3` | Controller IP address |
-| `control_mode` | `position` | `position`, `velocity`, or `controller` |
+| `control_mode` | `position` | `position` or `controller` |
 | `update_rate` | `1000` | 1000 for 1 ms; 250 for 4 ms |
 | `enable_controller_validation` | `true` | Validate model and minimum version |
 | `servo_gain` | `8000` | Port 8892 StartServo gain |
@@ -224,4 +213,4 @@ The control rate shall match the `cycle_time` field in port 8893 data:
 
 A cycle mismatch prevents hardware activation. Services, topics, units, and
 communication paths are documented in the
-[API reference](docs/API_description.md).
+[new API reference](docs/API_description_new.md).

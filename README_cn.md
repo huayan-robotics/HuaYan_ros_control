@@ -1,6 +1,6 @@
 # Elfin Robot ROS 2
 
-[English](README.md) · [API接口说明](docs/API_description_cn.md) ·
+[English](README.md) · [新版API接口说明](docs/API_description_new_cn.md) ·
 [控制器驱动使用手册](docs/controller_driver_guide_cn.md)
 
 本仓库提供Elfin机器人在ROS 2 Humble下的模型、控制器驱动、`ros2_control`硬件接口、
@@ -115,17 +115,6 @@ ros2 launch elfin_robot_bringup elfin_control.launch.py \
 
 该模式持续发布真实状态，ROS运动控制器保持 `inactive`，8892不发送运动命令。
 
-### 3.3 关节速度控制
-
-```bash
-ros2 launch elfin_robot_bringup elfin_control.launch.py \
-  robot_model:=E05 hardware_type:=controller control_mode:=velocity \
-  robot_ip:=192.168.56.103
-```
-
-该模式通过 `elfin_velocity_controller`发送SpeedJ命令。MoveIt轨迹执行使用
-`control_mode:=position`。
-
 ## 4. GUI
 
 新版GUI完整启动：
@@ -181,7 +170,7 @@ ros2 launch elfin_robot_bringup elfin_control.launch.py \
 | `robot_model` | `E05` | 控制器机型别名 |
 | `hardware_type` | `gazebo` | `controller`、`gazebo`、`ethercat`或`fake` |
 | `robot_ip` | `10.20.200.3` | 真实控制器IP |
-| `control_mode` | `position` | `position`、`velocity`或`controller` |
+| `control_mode` | `position` | `position`或`controller` |
 | `update_rate` | `1000` | 1 ms控制器为1000，4 ms控制器为250 |
 | `enable_controller_validation` | `true` | 校验机型和最低版本 |
 | `servo_gain` | `8000` | 8892 StartServo增益 |
@@ -217,4 +206,4 @@ SDK返回的七段数字（例如 `20260724.31340.0.8228.1315.107.0`）是内部
 | 4 ms | 250 Hz |
 
 周期不一致时硬件接口拒绝激活。SDK服务、状态话题、单位和通信链路见
-[API接口说明](docs/API_description_cn.md)。
+[新版API接口说明](docs/API_description_new_cn.md)。

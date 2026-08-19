@@ -110,6 +110,8 @@ install(
   FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/../docs/API_description.md
     ${CMAKE_CURRENT_SOURCE_DIR}/../docs/API_description_cn.md
+    ${CMAKE_CURRENT_SOURCE_DIR}/../docs/API_description_new.md
+    ${CMAKE_CURRENT_SOURCE_DIR}/../docs/API_description_new_cn.md
   DESTINATION share/${PROJECT_NAME}
 )
 

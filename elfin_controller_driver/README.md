@@ -2,7 +2,7 @@
 
 This package is the controller-backed replacement for the legacy SOEM hardware
 plugin. Port 8893 is consumed by a dedicated state thread and port 8892 is used
-for `StartServo`, `PushServoJ`, and `SpeedJ` commands. ROS joint units are radians;
+for `StartServo` and `PushServoJ` commands. ROS joint units are radians;
 the controller boundary defaults to degrees.
 
 The SDK node exposes:
@@ -98,14 +98,10 @@ override. For normal use, prefer `elfin_control.launch.py` and change only
 8893 `cycle_time` during activation and aborts the complete launch when it does
 not match the configured rate.
 
-The position/velocity motion controller is initially loaded inactive. If the
+The position motion controller is initially loaded inactive. If the
 first 10004 status frame reports enabled, unpaused, fault-free, and all joint
 brakes released, the driver activates it automatically after loading completes.
 If the robot is not ready at startup, enabling it later does not automatically
 activate ROS control; call `set_ros_control(true)` explicitly. Loss of readiness
 or of the 10004 stream deactivates it and requires another explicit activation
 request after recovery.
-
-The 8892 `SpeedJ` string is implemented as
-`SpeedJ,0,J1,...,J6,acceleration,runtime,;`. Confirm this exact command spelling
-and field order against the controller firmware before testing velocity mode.

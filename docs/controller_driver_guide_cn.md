@@ -2,7 +2,7 @@
 
 本文档说明工作空间编译、真实控制器与仿真启动、启动参数和控制器版本限制。
 SDK服务、状态话题、GUI功能及通信实现统一见
-[`API_description_cn.md`](API_description_cn.md)。
+[`API_description_new_cn.md`](API_description_new_cn.md)。
 
 ## 1. 环境与编译
 
@@ -116,17 +116,7 @@ ros2 launch elfin_robot_bringup elfin_control.launch.py \
 该模式持续读取真实状态并更新RViz，运动控制器保持 `inactive`，ROS不向8892发送运动
 命令，适用于示教器、SDK控制和状态观察。
 
-### 3.3 速度控制
-
-```bash
-ros2 launch elfin_robot_bringup elfin_control.launch.py \
-  robot_model:=E05 hardware_type:=controller control_mode:=velocity \
-  robot_ip:=192.168.56.103
-```
-
-该模式启动关节速度控制器；当前MoveIt轨迹执行仍应使用 `position` 模式。
-
-### 3.4 GUI启动
+### 3.3 GUI启动
 
 #### 新版GUI完整启动
 
@@ -202,7 +192,7 @@ ros2 launch elfin_robot_bringup elfin_control.launch.py \
 | `robot_model` | `E05` | 控制器机型别名 |
 | `hardware_type` | `gazebo` | `controller`、`gazebo`、`ethercat`或`fake` |
 | `robot_ip` | `10.20.200.3` | 真实控制器IP；统一YAML可覆盖 |
-| `control_mode` | `position` | `position`、`velocity`或`controller` |
+| `control_mode` | `position` | `position`或`controller` |
 | `update_rate` | `1000` | 1 ms控制器为1000，4 ms控制器为250 |
 | `enable_controller_validation` | `true` | 启动前校验机型和最低版本 |
 | `servo_gain` | `8000` | 8892 `StartServo`增益 |
