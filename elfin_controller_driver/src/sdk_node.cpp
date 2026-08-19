@@ -34,7 +34,7 @@
 #include <std_srvs/srv/set_bool.hpp>
 #include <std_srvs/srv/trigger.hpp>
 
-#include "HR_Pro.h"
+#include "elfin_controller_driver/HR_Pro.h"
 #include "elfin_controller_driver/rt_info_client.hpp"
 
 using namespace std::chrono_literals;

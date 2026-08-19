@@ -13,7 +13,7 @@
 
 #include <rclcpp/rclcpp.hpp>
 
-#include "HR_Pro.h"
+#include "elfin_controller_driver/HR_Pro.h"
 
 namespace
 {
